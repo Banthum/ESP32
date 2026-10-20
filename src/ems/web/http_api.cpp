@@ -12,6 +12,7 @@
 #include "../core/log.h"
 #include "../core/state_bus.h"
 #include "../net/net.h"
+#include "../logic/battery_scheduler.h"
 #include "../storage/storage.h"
 
 static const char * TAG = "http_api";
@@ -322,6 +323,71 @@ static void handle_debug_storage(void)
     cJSON_Delete(j);
 }
 
+// POST /api/debug/plan: draait plan_day() op aangeleverde invoer (zelfde vorm
+// als de Pi gebruikt) - om het ESP32-plan naast dat van de Pi te leggen.
+// Body: {now_epoch, soc_pct, capacity_kwh, max_power_w, min_soc_pct, max_soc_pct,
+//        energy_loss_pct, price_hourly[48], quarter_prices[192|null...],
+//        consumption[192|null...], solar_hourly[48|null...]}
+static void json_to_opt(const cJSON * arr, opt_d * out, int max_n, int * n_out)
+{
+    int n = 0;
+    const cJSON * v;
+    cJSON_ArrayForEach(v, arr)
+    {
+        if(n == max_n) break;
+        out[n++] = cJSON_IsNumber(v) ? opt_some(v->valuedouble) : opt_none();
+    }
+    *n_out = n;
+}
+
+static void handle_debug_plan(void)
+{
+    cJSON * body = cJSON_Parse(s_server.arg("plain").c_str());
+    if(!body) {
+        s_server.send(400, "text/plain", "body is geen JSON");
+        return;
+    }
+    static opt_d price[48], cons[192], solar[48], qp[192];
+    static bool q_valid[192];
+    static double q_value[192];
+    int n_price = 0, n_cons = 0, n_solar = 0, n_q = 0;
+    json_to_opt(cJSON_GetObjectItem(body, "price_hourly"), price, 48, &n_price);
+    json_to_opt(cJSON_GetObjectItem(body, "consumption"), cons, 192, &n_cons);
+    json_to_opt(cJSON_GetObjectItem(body, "solar_hourly"), solar, 48, &n_solar);
+    json_to_opt(cJSON_GetObjectItem(body, "quarter_prices"), qp, 192, &n_q);
+    for(int i = 0; i < n_q; i++) {
+        q_valid[i] = qp[i].valid;
+        q_value[i] = qp[i].v;
+    }
+    plan_inputs_t in = {price, n_price, cons, n_cons, solar, n_solar, n_q ? q_valid : nullptr, q_value, n_q};
+
+    static plan_result_t * plan = nullptr;
+    if(!plan) plan = (plan_result_t *) heap_caps_malloc(sizeof(plan_result_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto num = [&](const char * k) { return cJSON_GetNumberValue(cJSON_GetObjectItem(body, k)); };
+    plan_day(&in, num("soc_pct"), num("capacity_kwh"), num("max_power_w"), (time_t) num("now_epoch"), 48.0,
+             num("min_soc_pct"), num("max_soc_pct"), num("energy_loss_pct"), plan);
+    cJSON_Delete(body);
+
+    static const char * actions[] = {"none", "auto", "charge", "block"};
+    cJSON * j = cJSON_CreateObject();
+    cJSON_AddNumberToObject(j, "compute_ms", plan->compute_ms);
+    cJSON_AddNumberToObject(j, "scenarios_tried", plan->scenarios_tried);
+    cJSON_AddStringToObject(j, "action", actions[plan->current_decision.action]);
+    cJSON * w = cJSON_AddArrayToObject(j, "windows_chosen");
+    for(int i = 0; i < plan->n_windows; i++) cJSON_AddItemToArray(w, cJSON_CreateString(plan->windows_start_time[i]));
+    cJSON * bw = cJSON_AddArrayToObject(j, "block_windows_chosen");
+    for(int i = 0; i < plan->n_block_windows; i++)
+        cJSON_AddItemToArray(bw, cJSON_CreateString(plan->block_windows_start_time[i]));
+    cJSON_AddItemToObject(j, "battery_plan_eigen_zon_wh", opt_array(plan->eigen_zon_wh, QUARTERS_PER_PLAN));
+    cJSON_AddItemToObject(j, "battery_plan_actief_gestuurd_wh", opt_array(plan->actief_gestuurd_wh, QUARTERS_PER_PLAN));
+    cJSON_AddItemToObject(j, "battery_plan_verwacht_verbruik_wh",
+                          opt_array(plan->verwacht_verbruik_wh, QUARTERS_PER_PLAN));
+    cJSON_AddItemToObject(j, "battery_plan_geblokkeerd_wh", opt_array(plan->geblokkeerd_wh, QUARTERS_PER_PLAN));
+    cJSON_AddItemToObject(j, "battery_soc_forecast_pct", opt_array(plan->soc_forecast_pct, QUARTERS_PER_PLAN));
+    send_json(200, j);
+    cJSON_Delete(j);
+}
+
 static void write_to_client(const char * text, void * ctx)
 {
     (void) ctx;
@@ -358,6 +424,7 @@ void http_api_start(const char * write_token)
     s_server.on("/api/upload", HTTP_POST, handle_upload_done, handle_upload_chunk);
     s_server.on("/api/import", HTTP_POST, handle_import);
     s_server.on("/api/debug/storage", HTTP_GET, handle_debug_storage);
+    s_server.on("/api/debug/plan", HTTP_POST, handle_debug_plan);
     // Vervangen /home/pi/consumption_quarterly.csv en battery_log.csv van de Pi.
     s_server.on("/export/consumption_quarterly.csv", HTTP_GET,
                 []() { send_csv(storage_export_consumption_csv, "consumption_quarterly.csv"); });
