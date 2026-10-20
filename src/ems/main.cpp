@@ -1,117 +1,110 @@
-// EMSmachine op CrowPanel Advance 4.3" V1.0 - fase 1: board-laag + LVGL 9.
-// Tijdelijke testapp: scherm, touch, geheugen en LittleFS controleren.
+// EMSmachine op CrowPanel Advance 4.3" V1.0 - fase 2: netwerk, tijd, config, HTTP-API.
+// Tijdelijk statusscherm; het echte dashboard komt in fase 7.
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #include "board/board.h"
+#include "config/config.h"
+#include "core/log.h"
+#include "core/paths.h"
+#include "net/net.h"
+#include "web/http_api.h"
 
-static lv_obj_t * s_info_label;
-static lv_obj_t * s_touch_label;
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#error "Maak src/ems/secrets.h aan op basis van src/ems/secrets.example.h"
+#endif
 
-static void info_timer_cb(lv_timer_t * t)
+static const char * TAG = "main";
+
+static lv_obj_t * s_status_label;
+
+static void status_timer_cb(lv_timer_t * t)
 {
     (void) t;
-    lv_label_set_text_fmt(s_info_label,
-                          "Intern RAM vrij: %u KB (grootste blok %u KB)\n"
-                          "PSRAM vrij: %u KB\n"
-                          "LittleFS: %u / %u KB gebruikt",
+    char time_buf[32] = "nog niet gesynchroniseerd";
+    if(net_time_valid()) {
+        time_t now = time(nullptr);
+        struct tm local;
+        localtime_r(&now, &local);
+        strftime(time_buf, sizeof(time_buf), "%a %d-%m-%Y %H:%M:%S", &local);
+    }
+    lv_label_set_text_fmt(s_status_label,
+                          "WiFi: %s  (%s, %d dBm)\n"
+                          "Tijd: %s\n"
+                          "Intern RAM vrij: %u KB   PSRAM vrij: %u KB\n"
+                          "LittleFS: %u / %u KB",
+                          net_connected() ? "verbonden" : "niet verbonden", WiFi.localIP().toString().c_str(),
+                          net_connected() ? WiFi.RSSI() : 0, time_buf,
                           (unsigned) (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
-                          (unsigned) (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
                           (unsigned) (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
                           (unsigned) (LittleFS.usedBytes() / 1024), (unsigned) (LittleFS.totalBytes() / 1024));
 }
 
-static void screen_touch_cb(lv_event_t * e)
-{
-    lv_point_t p;
-    lv_indev_get_point(lv_indev_active(), &p);
-    lv_label_set_text_fmt(s_touch_label, "Touch: x=%d y=%d", (int) p.x, (int) p.y);
-    (void) e;
-}
-
-static void button_cb(lv_event_t * e)
-{
-    lv_obj_t * btn = (lv_obj_t *) lv_event_get_target(e);
-    static bool on = false;
-    on = !on;
-    lv_obj_set_style_bg_color(btn, on ? lv_color_make(0, 150, 0) : lv_color_make(150, 0, 0), 0);
-}
-
-static void build_test_screen(void)
+static void build_status_screen(void)
 {
     lv_obj_t * scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-    lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(scr, screen_touch_cb, LV_EVENT_PRESSING, nullptr);
 
     lv_obj_t * title = lv_label_create(scr);
-    lv_label_set_text(title, "EMSmachine - fase 1 (LVGL " LVGL_VERSION_INFO ")");
+    lv_label_set_text(title, "EMSmachine - fase 2: netwerk & config");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
-    s_info_label = lv_label_create(scr);
-    lv_obj_set_style_text_color(s_info_label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(s_info_label, &lv_font_montserrat_20, 0);
-    lv_obj_align(s_info_label, LV_ALIGN_LEFT_MID, 30, -20);
+    s_status_label = lv_label_create(scr);
+    lv_obj_set_style_text_color(s_status_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(s_status_label, &lv_font_montserrat_22, 0);
+    lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 30, 90);
 
-    s_touch_label = lv_label_create(scr);
-    lv_label_set_text(s_touch_label, "Touch: raak het scherm aan");
-    lv_obj_set_style_text_color(s_touch_label, lv_color_make(255, 200, 0), 0);
-    lv_obj_set_style_text_font(s_touch_label, &lv_font_montserrat_24, 0);
-    lv_obj_align(s_touch_label, LV_ALIGN_BOTTOM_LEFT, 30, -30);
+    battery_config_t bat = config_read_battery(EMS_BATTERY_CONFIG_PATH);
+    gas_config_t gas = config_read_gas(EMS_GAS_CONFIG_PATH);
+    char marstek_host[40];
+    config_read_marstek_host(EMS_MARSTEK_CONFIG_PATH, marstek_host, sizeof(marstek_host));
+    cJSON * solar = config_read_solar(EMS_SOLAR_CONFIG_PATH);
 
-    lv_obj_t * btn = lv_button_create(scr);
-    lv_obj_set_size(btn, 200, 80);
-    lv_obj_align(btn, LV_ALIGN_RIGHT_MID, -40, 0);
-    lv_obj_set_style_bg_color(btn, lv_color_make(150, 0, 0), 0);
-    lv_obj_add_event_cb(btn, button_cb, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t * btn_label = lv_label_create(btn);
-    lv_label_set_text(btn_label, "Tik mij");
-    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_24, 0);
-    lv_obj_center(btn_label);
+    lv_obj_t * cfg = lv_label_create(scr);
+    lv_obj_set_style_text_color(cfg, lv_color_make(255, 200, 0), 0);
+    lv_obj_set_style_text_font(cfg, &lv_font_montserrat_20, 0);
+    lv_label_set_text_fmt(cfg,
+                          "Config (defaults zolang er geen bestanden zijn):\n"
+                          "Batterij: %.2f kWh, %.0f W, SOC %.0f-%.0f%%, verlies %.1f%%\n"
+                          "Gas: %s, eenheid %s   Marstek-IP: %s\n"
+                          "Zon-config: %s",
+                          bat.capacity_kwh, bat.max_power_w, bat.min_soc_pct, bat.max_soc_pct, bat.energy_loss_pct,
+                          gas.enabled ? "aan" : "uit", gas.unit_is_m3 ? "m3" : "kWh", marstek_host,
+                          solar ? "aanwezig" : "nog niet ingesteld");
+    cJSON_Delete(solar);
+    lv_obj_align(cfg, LV_ALIGN_BOTTOM_LEFT, 30, -30);
 
-    // Kleurbalken: rood/groen/blauw los, om RGB-volgorde op dit paneel te bevestigen
-    const lv_color_t colors[] = {lv_color_make(255, 0, 0), lv_color_make(0, 255, 0), lv_color_make(0, 0, 255)};
-    const char * names[] = {"ROOD", "GROEN", "BLAUW"};
-    for(int i = 0; i < 3; i++) {
-        lv_obj_t * bar = lv_obj_create(scr);
-        lv_obj_remove_style_all(bar);
-        lv_obj_set_size(bar, 120, 50);
-        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(bar, colors[i], 0);
-        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 30 + i * 140, 80);
-        lv_obj_t * l = lv_label_create(bar);
-        lv_label_set_text(l, names[i]);
-        lv_obj_set_style_text_color(l, lv_color_white(), 0);
-        lv_obj_center(l);
-    }
-
-    lv_timer_create(info_timer_cb, 1000, nullptr);
-    info_timer_cb(nullptr);
+    lv_timer_create(status_timer_cb, 1000, nullptr);
+    status_timer_cb(nullptr);
 }
 
 void setup()
 {
     Serial.begin(115200);
     delay(200);
-    Serial.println("\nEMSmachine ESP32 - fase 1");
+    Serial.println("\nEMSmachine ESP32 - fase 2");
 
-    if(!LittleFS.begin(true)) {
-        Serial.println("LittleFS mount mislukt");
+    if(!LittleFS.begin(true, EMS_FS_MOUNT)) {
+        EMS_LOGE(TAG, "LittleFS mount mislukt");
     }
-    Serial.printf("LittleFS: %u/%u bytes\n", (unsigned) LittleFS.usedBytes(), (unsigned) LittleFS.totalBytes());
+    mkdir(EMS_DIR, 0755);
 
     board_init();
-
     board_lvgl_lock();
-    build_test_screen();
+    build_status_screen();
     board_lvgl_unlock();
 
-    Serial.printf("Intern RAM vrij: %u, PSRAM vrij: %u\n", (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                  (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    Serial.println("setup klaar");
+    net_start(WIFI_SSID, WIFI_PASSWORD, OTA_PASSWORD);
+    http_api_start();
+    EMS_LOGI(TAG, "setup klaar");
 }
 
 void loop()
