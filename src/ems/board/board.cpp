@@ -19,8 +19,10 @@ static constexpr int GT911_INT_PIN = 1;
 
 // LVGL tekent in 2 kleine buffers in intern RAM (zoals Elecrow's V1.1-V1.3-
 // code), niet in PSRAM: de PSRAM voedt al de RGB-framebuffer, en extra PSRAM-
-// verkeer gaf flikkering (zie src/elecrow_lesson03).
-static constexpr uint32_t LVGL_BUFFER_LINES = 40;
+// verkeer gaf flikkering (zie src/elecrow_lesson03). 20 i.p.v. Elecrow's 40
+// regels: mbedTLS (HTTPS naar prijs-/zon-API's) alloceert ~35 KB+ uit intern
+// RAM per verbinding, en met 2x40 regels bleef er na WiFi maar 87 KB over.
+static constexpr uint32_t LVGL_BUFFER_LINES = 20;
 
 static constexpr uint32_t LVGL_TASK_STACK = 8 * 1024;
 static constexpr UBaseType_t LVGL_TASK_PRIO = 2;

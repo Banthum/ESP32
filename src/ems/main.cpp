@@ -22,6 +22,8 @@
 
 static const char * TAG = "main";
 
+void probe_start(void); // probe.cpp - tijdelijk, fase 3
+
 static lv_obj_t * s_status_label;
 
 static void status_timer_cb(lv_timer_t * t)
@@ -103,7 +105,8 @@ void setup()
     board_lvgl_unlock();
 
     net_start(WIFI_SSID, WIFI_PASSWORD, OTA_PASSWORD);
-    http_api_start();
+    http_api_start(OTA_PASSWORD);
+    probe_start();
     EMS_LOGI(TAG, "setup klaar");
 }
 

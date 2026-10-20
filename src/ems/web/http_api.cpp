@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "../board/board.h"
+#include "../config/config.h"
 #include "../core/log.h"
 #include "../core/state_bus.h"
 #include "../net/net.h"
@@ -15,6 +16,20 @@
 static const char * TAG = "http_api";
 
 static WebServer s_server(80);
+static char s_write_token[64];
+
+// Alleen deze bestanden mogen via /api/config gezet worden (geen vrije paden).
+static const char * CONFIG_WHITELIST[] = {"battery_config.json", "gas_config.json", "solar_config.json",
+                                          "p1_source.json", "marstek.json"};
+
+static bool authorized(void)
+{
+    if(s_write_token[0] == '\0' || s_server.header("X-EMS-Token") != s_write_token) {
+        s_server.send(401, "text/plain", "missing/invalid X-EMS-Token");
+        return false;
+    }
+    return true;
+}
 
 static void send_json(int code, cJSON * json)
 {
@@ -131,6 +146,49 @@ static void handle_screenshot(void)
     board_lvgl_unlock();
 }
 
+// GET /api/config?name=x.json -> inhoud; PUT /api/config?name=x.json (body =
+// JSON, met token) -> valideren en atomair wegschrijven naar /littlefs/ems/.
+static void handle_config(void)
+{
+    String name = s_server.arg("name");
+    bool allowed = false;
+    for(const char * w : CONFIG_WHITELIST) {
+        if(name == w) {
+            allowed = true;
+        }
+    }
+    if(!allowed) {
+        s_server.send(400, "text/plain", "unknown config name");
+        return;
+    }
+    String path = String("/littlefs/ems/") + name;
+
+    if(s_server.method() == HTTP_GET) {
+        cJSON * json = config_load_json(path.c_str());
+        if(!json) {
+            s_server.send(404, "text/plain", "not set");
+            return;
+        }
+        send_json(200, json);
+        cJSON_Delete(json);
+        return;
+    }
+
+    if(!authorized()) {
+        return;
+    }
+    cJSON * json = cJSON_Parse(s_server.arg("plain").c_str());
+    if(!cJSON_IsObject(json)) {
+        cJSON_Delete(json);
+        s_server.send(400, "text/plain", "body is not a JSON object");
+        return;
+    }
+    bool ok = config_write_json(path.c_str(), json);
+    cJSON_Delete(json);
+    s_server.send(ok ? 200 : 500, "text/plain", ok ? "ok" : "write failed");
+    EMS_LOGI(TAG, "config %s %s", name.c_str(), ok ? "geschreven" : "NIET geschreven");
+}
+
 static void http_task(void * arg)
 {
     (void) arg;
@@ -140,9 +198,15 @@ static void http_task(void * arg)
     }
 }
 
-void http_api_start(void)
+void http_api_start(const char * write_token)
 {
+    snprintf(s_write_token, sizeof(s_write_token), "%s", write_token ? write_token : "");
+    const char * headers[] = {"X-EMS-Token"};
+    s_server.collectHeaders(headers, 1);
+
     s_server.on("/api/health", HTTP_GET, handle_health);
+    s_server.on("/api/config", HTTP_GET, handle_config);
+    s_server.on("/api/config", HTTP_PUT, handle_config);
     s_server.on("/api/state", HTTP_GET, handle_state);
     s_server.on("/api/files", HTTP_GET, handle_files);
     s_server.on("/api/screenshot", HTTP_GET, handle_screenshot);
