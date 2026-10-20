@@ -9,6 +9,7 @@
 
 #include "../board/board.h"
 #include "../config/config.h"
+#include "../daemon/daemon.h"
 #include "../core/log.h"
 #include "../core/state_bus.h"
 #include "../net/net.h"
@@ -49,6 +50,8 @@ static void handle_health(void)
     cJSON_AddNumberToObject(j, "heap_internal_largest", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(j, "heap_psram_free", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(j, "wifi_rssi", WiFi.RSSI());
+    cJSON_AddStringToObject(j, "wifi_bssid", WiFi.BSSIDstr().c_str());
+    cJSON_AddNumberToObject(j, "wifi_channel", WiFi.channel());
     cJSON_AddStringToObject(j, "ip", WiFi.localIP().toString().c_str());
     cJSON_AddBoolToObject(j, "time_valid", net_time_valid());
     char ts[32];
@@ -189,6 +192,10 @@ static void handle_config(void)
     cJSON_Delete(json);
     s_server.send(ok ? 200 : 500, "text/plain", ok ? "ok" : "write failed");
     EMS_LOGI(TAG, "config %s %s", name.c_str(), ok ? "geschreven" : "NIET geschreven");
+    if(ok) {
+        // Zoals de Pi z'n daemon herstart na het opslaan van instellingen.
+        daemon_reload_config();
+    }
 }
 
 // ---- upload (multipart) van import-bestanden naar /littlefs/ems/ ----

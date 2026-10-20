@@ -4,11 +4,13 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <mbedtls/platform.h>
 #include <sys/stat.h>
 #include <time.h>
 
 #include "board/board.h"
 #include "config/config.h"
+#include "daemon/daemon.h"
 #include "core/log.h"
 #include "core/paths.h"
 #include "net/net.h"
@@ -22,8 +24,6 @@
 #endif
 
 static const char * TAG = "main";
-
-void probe_start(void); // probe.cpp - tijdelijk, fase 3
 
 static lv_obj_t * s_status_label;
 
@@ -89,8 +89,28 @@ static void build_status_screen(void)
     status_timer_cb(nullptr);
 }
 
+// cJSON maakt per getal een klein object; een volledig dashboardbericht heeft
+// er >2000. Kleine allocaties belanden standaard in het schaarse interne RAM
+// (dat WiFi/TLS/LVGL nodig hebben) - daarom alles van cJSON naar PSRAM.
+static void * cjson_psram_malloc(size_t n)
+{
+    return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+// mbedTLS (HTTPS naar prijs-/zon-API's) vraagt per verbinding ~30-40 KB; in
+// deze core standaard uit intern RAM. Met daemon, LVGL en WiFi samen was dat
+// er niet meer (ESP_ERR_HTTP_CONNECT bij elke HTTPS-call) - dus naar PSRAM.
+static void * mbedtls_psram_calloc(size_t n, size_t size)
+{
+    return heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
 void setup()
 {
+    cJSON_Hooks hooks = {cjson_psram_malloc, heap_caps_free};
+    cJSON_InitHooks(&hooks);
+    mbedtls_platform_set_calloc_free(mbedtls_psram_calloc, heap_caps_free);
+
     Serial.begin(115200);
     delay(200);
     Serial.println("\nEMSmachine ESP32 - fase 2");
@@ -108,7 +128,7 @@ void setup()
 
     net_start(WIFI_SSID, WIFI_PASSWORD, OTA_PASSWORD);
     http_api_start(OTA_PASSWORD);
-    probe_start();
+    daemon_start();
     EMS_LOGI(TAG, "setup klaar");
 }
 

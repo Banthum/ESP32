@@ -61,7 +61,8 @@ static void on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info)
 {
     switch(event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            EMS_LOGI(TAG, "WiFi verbonden, IP %s, RSSI %d dBm", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+            EMS_LOGI(TAG, "WiFi verbonden, IP %s, RSSI %d dBm, access point %s, kanaal %d",
+                     WiFi.localIP().toString().c_str(), WiFi.RSSI(), WiFi.BSSIDstr().c_str(), WiFi.channel());
             start_services();
             break;
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -88,6 +89,12 @@ void net_start(const char * ssid, const char * password, const char * ota_passwo
     // niet vertraagd/gemist worden door een slapende radio.
     WiFi.setSleep(false);
     WiFi.setAutoReconnect(true);
+    // Standaard verbindt de ESP32 met het EERSTE access point met deze SSID dat
+    // hij tegenkomt. Met meerdere access points (mesh/extender) bleef hij zo
+    // aan een ver exemplaar hangen (-80 dBm, terwijl een ander op ~-55 stond).
+    // Alle kanalen scannen en het sterkste kiezen.
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.begin(ssid, password);
     EMS_LOGI(TAG, "verbinden met WiFi '%s'...", ssid);
 }
