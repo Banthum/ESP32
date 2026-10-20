@@ -16,10 +16,21 @@ Hardware V1.0 gebruikt andere backlight-aansturing dan V1.1+; gebruik alleen
 Elecrow-code uit de **V1.0**-mappen van
 [Elecrow-RD/CrowPanel-Advance-4.3-HMI-ESP32-S3-AI-Powered-IPS-Touch-Screen-800x480](https://github.com/Elecrow-RD/CrowPanel-Advance-4.3-HMI-ESP32-S3-AI-Powered-IPS-Touch-Screen-800x480).
 
+## Omgevingen
+
+| Env | Inhoud |
+|---|---|
+| `bringup` (default) | Seriële check van chip/flash/PSRAM, geen display |
+| `elecrow_lesson03` | Elecrow's V1.0-voorbeeld lesson-03 (LVGL 8, LovyanGFX, GT911-touch, backlight via I/O-expander op 0x18) |
+
+Afwijkingen van Elecrow's V1.0-setup staan als commentaar in `platformio.ini` en in de code:
+LovyanGFX 1.2.25 i.p.v. 1.1.16 (core 3.3.x), en tegen flikkering pixelklok 16 MHz en
+LVGL-buffers van 40 regels in intern RAM, beide overgenomen uit Elecrow's V1.1–V1.3-code.
+
 ## Bouwen en uploaden
 
 ```
-pio run -t upload
+pio run -e elecrow_lesson03 -t upload
 pio device monitor
 ```
 
