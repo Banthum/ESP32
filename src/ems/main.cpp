@@ -12,6 +12,7 @@
 #include "core/log.h"
 #include "core/paths.h"
 #include "net/net.h"
+#include "storage/storage.h"
 #include "web/http_api.h"
 
 #if __has_include("secrets.h")
@@ -98,6 +99,7 @@ void setup()
         EMS_LOGE(TAG, "LittleFS mount mislukt");
     }
     mkdir(EMS_DIR, 0755);
+    storage_init(EMS_DB_PATH);
 
     board_init();
     board_lvgl_lock();

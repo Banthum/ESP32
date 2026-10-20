@@ -12,6 +12,7 @@
 #include "../core/log.h"
 #include "../core/state_bus.h"
 #include "../net/net.h"
+#include "../storage/storage.h"
 
 static const char * TAG = "http_api";
 
@@ -189,6 +190,153 @@ static void handle_config(void)
     EMS_LOGI(TAG, "config %s %s", name.c_str(), ok ? "geschreven" : "NIET geschreven");
 }
 
+// ---- upload (multipart) van import-bestanden naar /littlefs/ems/ ----
+static const char * UPLOAD_WHITELIST[] = {"import.db", "default_consumption_profile.csv"};
+static FILE * s_upload_file = nullptr;
+static bool s_upload_ok = false;
+static String s_upload_name;
+
+static void handle_upload_chunk(void)
+{
+    HTTPUpload & up = s_server.upload();
+    if(up.status == UPLOAD_FILE_START) {
+        s_upload_ok = false;
+        s_upload_name = s_server.arg("name");
+        bool allowed = false;
+        for(const char * w : UPLOAD_WHITELIST) {
+            if(s_upload_name == w) allowed = true;
+        }
+        bool token_ok = s_write_token[0] != '\0' && s_server.header("X-EMS-Token") == s_write_token;
+        if(allowed && token_ok) {
+            String path = String("/littlefs/ems/") + s_upload_name + ".part";
+            s_upload_file = fopen(path.c_str(), "wb");
+            s_upload_ok = s_upload_file != nullptr;
+        }
+    } else if(up.status == UPLOAD_FILE_WRITE) {
+        if(s_upload_file && fwrite(up.buf, 1, up.currentSize, s_upload_file) != up.currentSize) {
+            s_upload_ok = false;
+        }
+    } else if(up.status == UPLOAD_FILE_END || up.status == UPLOAD_FILE_ABORTED) {
+        if(s_upload_file) {
+            fclose(s_upload_file);
+            s_upload_file = nullptr;
+        }
+        String part = String("/littlefs/ems/") + s_upload_name + ".part";
+        String final_path = String("/littlefs/ems/") + s_upload_name;
+        if(up.status == UPLOAD_FILE_END && s_upload_ok) {
+            remove(final_path.c_str());
+            s_upload_ok = rename(part.c_str(), final_path.c_str()) == 0;
+        } else {
+            remove(part.c_str());
+            s_upload_ok = false;
+        }
+    }
+}
+
+static void handle_upload_done(void)
+{
+    if(!s_upload_ok) {
+        s_server.send(400, "text/plain", "upload geweigerd of mislukt (token/naam?)");
+        return;
+    }
+    s_server.send(200, "text/plain", "ok");
+    EMS_LOGI(TAG, "upload %s ontvangen", s_upload_name.c_str());
+}
+
+// POST /api/import: neemt de historie over uit een eerder geüploade import.db
+// (de Pi-export) en verwijdert dat bestand daarna.
+static void handle_import(void)
+{
+    if(!authorized()) {
+        return;
+    }
+    const char * path = "/littlefs/ems/import.db";
+    cJSON * report = cJSON_CreateObject();
+    bool ok = storage_import_from_db(path, report);
+    remove(path);
+    cJSON_AddBoolToObject(report, "ok", ok);
+    send_json(ok ? 200 : 500, report);
+    cJSON_Delete(report);
+}
+
+static cJSON * opt_array(const opt_d * v, int n)
+{
+    cJSON * arr = cJSON_CreateArray();
+    for(int i = 0; i < n; i++) {
+        cJSON_AddItemToArray(arr, v[i].valid ? cJSON_CreateNumber(v[i].v) : cJSON_CreateNull());
+    }
+    return arr;
+}
+
+// GET /api/debug/storage: wat de opslaglaag nu berekent - om naast de Pi te leggen.
+static void handle_debug_storage(void)
+{
+    static opt_d today_curve[QUARTERS_PER_DAY], tomorrow_curve[QUARTERS_PER_DAY], solar_q[QUARTERS_PER_DAY];
+    static opt_d solar_h[24];
+    ems_date_t today = date_today();
+    if(s_server.hasArg("timing")) {
+        // Diagnose: tijd per bouwsteen van de verbruiksvoorspelling.
+        static opt_d profile[QUARTERS_PER_DAY];
+        uint32_t t0 = millis();
+        storage_load_default_consumption_profile("/littlefs/ems/default_consumption_profile.csv", profile);
+        uint32_t t1 = millis();
+        storage_expected_consumption(time(nullptr), 14, 1, profile);
+        uint32_t t2 = millis();
+        storage_expected_consumption(time(nullptr) + 900, 14, 1, profile);
+        uint32_t t3 = millis();
+        char buf[160];
+        snprintf(buf, sizeof(buf), "{\"profile_ms\":%u,\"query1_ms\":%u,\"query2_ms\":%u}", (unsigned) (t1 - t0),
+                 (unsigned) (t2 - t1), (unsigned) (t3 - t2));
+        s_server.send(200, "application/json", buf);
+        return;
+    }
+    storage_expected_consumption_curve(today, today_curve);
+    storage_expected_consumption_curve(date_add_days(today, 1), tomorrow_curve);
+    storage_solar_forecast_curve(today, solar_h);
+    storage_solar_forecast_curve_quarterly(today, solar_q);
+    savings_summary_t s = storage_savings_summary(today);
+
+    cJSON * j = cJSON_CreateObject();
+    cJSON_AddItemToObject(j, "expected_consumption_curve", opt_array(today_curve, QUARTERS_PER_DAY));
+    cJSON_AddItemToObject(j, "expected_consumption_curve_tomorrow", opt_array(tomorrow_curve, QUARTERS_PER_DAY));
+    cJSON_AddItemToObject(j, "solar_forecast_curve", opt_array(solar_h, 24));
+    cJSON_AddItemToObject(j, "solar_forecast_curve_quarterly_today", opt_array(solar_q, QUARTERS_PER_DAY));
+    cJSON_AddNumberToObject(j, "shadow_soc_kwh", storage_load_pool_state());
+    char y[11];
+    date_iso(date_add_days(today, -1), y);
+    double baseline;
+    if(storage_overnight_baseline_load_w(y, &baseline)) cJSON_AddNumberToObject(j, "overnight_baseline_yesterday_w", baseline);
+    else cJSON_AddNullToObject(j, "overnight_baseline_yesterday_w");
+    const struct {
+        const char * name;
+        savings_pair_t p;
+    } periods[] = {{"dag", s.dag}, {"week", s.week}, {"maand", s.maand}, {"jaar", s.jaar}, {"altijd", s.altijd}};
+    for(auto & p : periods) {
+        char k[48];
+        snprintf(k, sizeof(k), "savings_%s_batterij_eur", p.name);
+        cJSON_AddNumberToObject(j, k, p.p.batterij_eur);
+        snprintf(k, sizeof(k), "savings_%s_ems_eur", p.name);
+        cJSON_AddNumberToObject(j, k, p.p.ems_eur);
+    }
+    send_json(200, j);
+    cJSON_Delete(j);
+}
+
+static void write_to_client(const char * text, void * ctx)
+{
+    (void) ctx;
+    s_server.sendContent(text);
+}
+
+static void send_csv(int (*exporter)(storage_write_fn, void *), const char * filename)
+{
+    s_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    s_server.sendHeader("Content-Disposition", String("attachment; filename=") + filename);
+    s_server.send(200, "text/csv", "");
+    exporter(write_to_client, nullptr);
+    s_server.sendContent("");
+}
+
 static void http_task(void * arg)
 {
     (void) arg;
@@ -207,6 +355,14 @@ void http_api_start(const char * write_token)
     s_server.on("/api/health", HTTP_GET, handle_health);
     s_server.on("/api/config", HTTP_GET, handle_config);
     s_server.on("/api/config", HTTP_PUT, handle_config);
+    s_server.on("/api/upload", HTTP_POST, handle_upload_done, handle_upload_chunk);
+    s_server.on("/api/import", HTTP_POST, handle_import);
+    s_server.on("/api/debug/storage", HTTP_GET, handle_debug_storage);
+    // Vervangen /home/pi/consumption_quarterly.csv en battery_log.csv van de Pi.
+    s_server.on("/export/consumption_quarterly.csv", HTTP_GET,
+                []() { send_csv(storage_export_consumption_csv, "consumption_quarterly.csv"); });
+    s_server.on("/export/battery_log.csv", HTTP_GET,
+                []() { send_csv(storage_export_battery_log_csv, "battery_log.csv"); });
     s_server.on("/api/state", HTTP_GET, handle_state);
     s_server.on("/api/files", HTTP_GET, handle_files);
     s_server.on("/api/screenshot", HTTP_GET, handle_screenshot);
