@@ -6,6 +6,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Kopieert `json` (nul-getermineerd) als nieuwste bericht.
 void state_bus_publish(const char * json);
 
@@ -14,3 +18,7 @@ void state_bus_publish(const char * json);
 char * state_bus_copy(uint32_t * version_out);
 
 uint32_t state_bus_version(void);
+
+#ifdef __cplusplus
+}
+#endif

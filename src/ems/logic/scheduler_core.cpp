@@ -5,6 +5,13 @@
 #include <stdio.h>
 #include <string.h>
 
+static sched_yield_fn s_yield = nullptr;
+
+void sched_set_yield_hook(sched_yield_fn fn)
+{
+    s_yield = fn;
+}
+
 static double dmin(double a, double b)
 {
     return a < b ? a : b;
@@ -226,6 +233,7 @@ static void best_single_window(sched_scratch_t * s, int n, float soc0, const bat
             for(int i = start; i < start + length; i++) s->charge_plan[i] = b->max_charge;
             simulate_f(n, s->ip, s->ep, s->load, s->solar, s->charge_plan, s->discharge_plan, soc0, b, &s->trial);
             (*tried)++;
+            if(s_yield && (*tried & 63) == 0) s_yield();
 
             float charge_added = 0.0f;
             for(int i = start; i < start + length; i++) charge_added += s->trial.charge[i] - s->best.charge[i];
@@ -270,6 +278,7 @@ static void best_single_block_window(sched_scratch_t * s, int n, float soc0, con
             simulate_f(n, s->ip, s->ep, s->load, s->solar, s->locked_charge_plan, s->discharge_plan, soc0, b,
                        &s->trial);
             (*tried)++;
+            if(s_yield && (*tried & 63) == 0) s_yield();
 
             float blocked = 0.0f;
             for(int i = start; i < start + length; i++) blocked += s->best.discharge[i] - s->trial.discharge[i];

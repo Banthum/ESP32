@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "../core/log.h"
+#include "../storage/storage.h"
 
 static const char * TAG = "net";
 
@@ -51,7 +52,10 @@ static void start_services(void)
 
     ArduinoOTA.setHostname(EMS_HOSTNAME);
     ArduinoOTA.setPassword(s_ota_password);
-    ArduinoOTA.onStart([]() { EMS_LOGI(TAG, "OTA-update gestart"); });
+    ArduinoOTA.onStart([]() {
+        EMS_LOGI(TAG, "OTA-update gestart");
+        storage_persist(); // database staat in PSRAM - niet kwijtraken bij de herstart
+    });
     ArduinoOTA.onError([](ota_error_t e) { EMS_LOGW(TAG, "OTA-fout %d", (int) e); });
     ArduinoOTA.begin();
     xTaskCreatePinnedToCore(ota_task, "ota", 4096, nullptr, 1, nullptr, 0);

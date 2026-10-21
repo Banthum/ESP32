@@ -19,3 +19,8 @@ void board_lvgl_lock(void);
 void board_lvgl_unlock(void);
 
 lv_display_t * board_display(void);
+
+// De RGB565-framebuffer (800x480, PSRAM) zoals het paneel hem toont - voor
+// /api/screenshot. Kan nullptr zijn als het paneel niet startte.
+const uint16_t * board_framebuffer(void);
+

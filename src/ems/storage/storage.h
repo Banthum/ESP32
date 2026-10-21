@@ -14,6 +14,10 @@
 #include "../core/optional.h"
 #include "../core/timeutil.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define QUARTERS_PER_DAY 96
 #define MEASUREMENT_RETENTION_DAYS 3
 #define BATTERY_LOG_RETENTION_DAYS 14
@@ -21,8 +25,16 @@
 #define OVERNIGHT_BASELINE_START_QUARTER 4
 #define OVERNIGHT_BASELINE_END_QUARTER 12 // exclusief
 
+// De database draait in PSRAM; db_path is het bestand op LittleFS waaruit hij
+// bij init geladen en waarnaar hij door storage_persist() weggeschreven wordt.
+#define STORAGE_PERSIST_INTERVAL_MS (60UL * 60UL * 1000UL)
+
 bool storage_init(const char * db_path);
-void storage_close(void);
+void storage_close(void); // schrijft eerst weg
+// Hele database atomair naar LittleFS (tmp-bestand + rename).
+bool storage_persist(void);
+// storage_persist() als het laatste wegschrijven STORAGE_PERSIST_INTERVAL_MS geleden is.
+void storage_persist_if_due(void);
 
 // --- MeasurementBuffer (in-memory, flush = één gemiddelde per bron) ---
 void storage_measurement_record(const char * source, double value, const char * unit);
@@ -92,3 +104,12 @@ int storage_export_battery_log_csv(storage_write_fn write, void * ctx);
 // Kopieert consumption_quarterly, savings_quarterly, battery_pool_state en
 // solar_forecast uit een losse SQLite-file (de Pi-export) in de eigen DB.
 bool storage_import_from_db(const char * import_db_path, cJSON * report);
+
+// Port van dashboard-ui/savings_reset_writer.py: wist savings_quarterly en
+// battery_pool_state (alle tellers terug naar 0) plus de nog niet
+// weggeschreven buffer. false + reden bij een echte fout.
+bool storage_reset_savings(char * error_out, int error_out_size);
+
+#ifdef __cplusplus
+}
+#endif

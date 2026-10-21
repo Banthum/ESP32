@@ -20,6 +20,7 @@
 #include "../core/state_bus.h"
 #include "../core/timeutil.h"
 #include "../logic/battery_scheduler.h"
+#include "../logic/scheduler_core.h"
 #include "../logic/savings_tracker.h"
 #include "../net/net.h"
 #include "../storage/storage.h"
@@ -431,8 +432,19 @@ static void history_append(opt_d solar, opt_d battery, opt_d grid)
     S->hist_len++;
 }
 
+// Logt stappen van de cyclus die ongewoon lang duren (de daemon hoort snel
+// klaar te zijn; trage flash-writes lieten eerder het beeld springen).
+static uint32_t s_mark_ms;
+static void mark(const char * what)
+{
+    uint32_t now = millis();
+    if(now - s_mark_ms > 5000) EMS_LOGW(TAG, "stap %s: %u ms", what, (unsigned) (now - s_mark_ms));
+    s_mark_ms = millis();
+}
+
 static void tick(void)
 {
+    s_mark_ms = millis();
     ems_date_t today = date_today();
     if(s_reload_requested) {
         s_reload_requested = false;
@@ -442,16 +454,24 @@ static void tick(void)
         S->last_price_fetch_s = now_s() - S->price_poll_interval_s;
         S->replanned_once = false;
         S->have_day_curves = false;
+        // Na een besparingsreset: in-memory boekhouding opnieuw van de DB
+        // (op de Pi gebeurt dit door de daemon-herstart).
+        S->pool.shadow_soc_kwh = storage_load_pool_state();
+        S->savings_cache = storage_savings_summary(date_today());
+        S->have_last_savings_tick = false;
     }
     if(!S->have_day_curves || !date_equal(today, S->last_aggregated_date)) {
         daily_refresh(today);
     }
+    mark("daily_refresh");
     if(now_s() - S->last_solar_fetch_s >= SOLAR_FORECAST_POLL_INTERVAL_S) {
         poll_solar();
     }
+    mark("poll_solar");
     if(now_s() - S->last_price_fetch_s >= S->price_poll_interval_s) {
         poll_prices();
     }
+    mark("poll_prices");
 
     // --- weergavecurves (all-in import, export met zonnebonus) ---
     static double display_price[24], display_export[24];
@@ -489,6 +509,7 @@ static void tick(void)
 
     // --- data_sources.build_message(): telemetrie + P1 ---
     marstek_telemetry_t tel = marstek_read_telemetry(s_marstek_host);
+    mark("marstek_telemetry");
     double p1_w;
     bool grid_valid;
     double grid_w;
@@ -500,6 +521,7 @@ static void tick(void)
         grid_valid = tel.grid_power_w_valid;
         grid_w = tel.grid_power_w;
     }
+    mark("p1");
     history_append(tel.solar_power_w_valid ? opt_some(tel.solar_power_w) : opt_none(),
                    tel.battery_power_w_valid ? opt_some(tel.battery_power_w) : opt_none(),
                    grid_valid ? opt_some(grid_w) : opt_none());
@@ -559,6 +581,7 @@ static void tick(void)
 
     double pend_b, pend_e;
     storage_savings_pending(&pend_b, &pend_e);
+    mark("json+savings_pending");
     const struct {
         const char * name;
         savings_pair_t p;
@@ -583,10 +606,12 @@ static void tick(void)
             replan(tel.battery_soc_pct);
         }
     }
+    mark("replan");
 
     // --- Pi-sturing herkennen (alleen lezen) ---
     marstek_mode_t mode = marstek_get_mode(s_marstek_host);
     S->pi_action = detect_pi_action(&mode, &tel);
+    mark("get_mode");
 
     cJSON_AddItemToObject(m, "battery_plan_eigen_zon_wh", opt_array(S->plan.eigen_zon_wh, Q2));
     cJSON_AddItemToObject(m, "battery_plan_actief_gestuurd_wh", opt_array(S->plan.actief_gestuurd_wh, Q2));
@@ -605,12 +630,14 @@ static void tick(void)
         free(text);
     }
     cJSON_Delete(m);
+    mark("publish");
 
     // --- metingen bufferen ---
     if(tel.battery_power_w_valid) storage_measurement_record("battery_power", tel.battery_power_w, "W");
     if(tel.solar_power_w_valid) storage_measurement_record("solar_power", tel.solar_power_w, "W");
     if(grid_valid) storage_measurement_record("grid_power", grid_w, "W");
     if(tel.battery_soc_pct_valid) storage_measurement_record("battery_soc_pct", tel.battery_soc_pct, "%");
+    mark("measurement_record");
 
     // --- household_load + besparingen ---
     bool solar_est_valid = false;
@@ -672,6 +699,7 @@ static void tick(void)
     // --- flush (elke 60 s) ---
     if(now_s() - S->last_flush_s >= FLUSH_INTERVAL_S) {
         storage_measurement_flush();
+        mark("measurement_flush");
         S->last_flush_s = now_s();
         cJSON * stats = marstek_get_call_stats();
         if(stats) {
@@ -679,16 +707,34 @@ static void tick(void)
             cJSON_Delete(stats);
         }
         marstek_reset_call_stats();
+        mark("udp_stats_log");
         storage_actual_consumption_curve(CONSUMPTION_SOURCE, date_today(), S->actual_today);
+        mark("actual_curve");
         storage_save_pool_state(S->pool.shadow_soc_kwh);
+        mark("pool_state");
         storage_savings_flush();
+        mark("savings_flush");
         S->savings_cache = storage_savings_summary(date_today());
+        mark("savings_summary");
+        storage_persist_if_due();
+        mark("persist");
+    }
+}
+
+// Planner-zoeklus: elke ~50 ms rekenen een tick afstaan (zie sched_set_yield_hook).
+static void planner_yield(void)
+{
+    static uint32_t s_last = 0;
+    if(millis() - s_last >= 50) {
+        vTaskDelay(1);
+        s_last = millis();
     }
 }
 
 static void daemon_task(void * arg)
 {
     (void) arg;
+    sched_set_yield_hook(planner_yield);
     // Alles per dag/uur heeft een geldige klok nodig.
     while(!net_wait_for_time(60000)) {
         EMS_LOGW(TAG, "nog geen NTP-tijd, daemon wacht");

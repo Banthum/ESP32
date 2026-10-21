@@ -17,14 +17,15 @@ static constexpr uint8_t IOEX_PIN_TOUCH_RST = 2;
 // GT911 INT-pin: laag tijdens reset selecteert I2C-adres 0x5D.
 static constexpr int GT911_INT_PIN = 1;
 
-// LVGL tekent in 2 kleine buffers in intern RAM (zoals Elecrow's V1.1-V1.3-
-// code), niet in PSRAM: de PSRAM voedt al de RGB-framebuffer, en extra PSRAM-
-// verkeer gaf flikkering (zie src/elecrow_lesson03). 20 i.p.v. Elecrow's 40
-// regels: mbedTLS (HTTPS naar prijs-/zon-API's) alloceert ~35 KB+ uit intern
-// RAM per verbinding, en met 2x40 regels bleef er na WiFi maar 87 KB over.
-static constexpr uint32_t LVGL_BUFFER_LINES = 20;
+// LVGL tekent in 2 kleine buffers in intern RAM (zoals Elecrow's eigen code),
+// niet in PSRAM: de PSRAM voedt al de RGB-framebuffer, en extra PSRAM-verkeer
+// laat het beeld trillen. 10 regels (2x16 KB) zodat er genoeg intern RAM
+// overblijft voor WiFi/mbedTLS (~35 KB+ per HTTPS-verbinding).
+static constexpr uint32_t LVGL_BUFFER_LINES = 10;
 
-static constexpr uint32_t LVGL_TASK_STACK = 8 * 1024;
+// Ruim: instellingenschermen doen vanuit LVGL-callbacks een HTTPS-call
+// (PDOK-geocoding) en mbedTLS gebruikt flink wat stack.
+static constexpr uint32_t LVGL_TASK_STACK = 16 * 1024;
 static constexpr UBaseType_t LVGL_TASK_PRIO = 2;
 static constexpr BaseType_t LVGL_TASK_CORE = 1;
 
@@ -106,6 +107,11 @@ void board_lvgl_unlock(void)
 lv_display_t * board_display(void)
 {
     return s_disp;
+}
+
+const uint16_t * board_framebuffer(void)
+{
+    return s_gfx._panel_instance.frameBuffer();
 }
 
 void board_init(void)

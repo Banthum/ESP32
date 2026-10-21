@@ -13,8 +13,16 @@
 //   afgeleid uit ES.GetMode, voor dezelfde besparingsboekhouding als de Pi.
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void daemon_start(void);
 
 // Instellingen opnieuw inlezen bij de volgende cyclus (na opslaan via een
 // instellingenscherm) - vervangt "systemctl restart dashboard-daemon".
 void daemon_reload_config(void);
+
+#ifdef __cplusplus
+}
+#endif

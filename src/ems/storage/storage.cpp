@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include "../core/log.h"
 #include "../core/paths.h"
@@ -22,6 +24,21 @@ struct db_lock {
     db_lock() { xSemaphoreTakeRecursive(s_mutex, portMAX_DELAY); }
     ~db_lock() { xSemaphoreGiveRecursive(s_mutex); }
 };
+
+// Lange queries (verbruikscurve over weken historie) lezen duizenden pagina's
+// van flash; zonder pauze kreeg de idle-taak van core 0 >5 s geen CPU en
+// greep de task-watchdog in. Elke ~50 ms query-tijd even 1 tick afstaan.
+static int yield_progress(void * arg)
+{
+    (void) arg;
+    static uint32_t s_last_yield = 0;
+    uint32_t now = millis();
+    if(now - s_last_yield >= 50) {
+        vTaskDelay(1);
+        s_last_yield = millis();
+    }
+    return 0;
+}
 
 static bool exec(const char * sql)
 {
@@ -38,7 +55,7 @@ static sqlite3_stmt * prepare(const char * sql)
 {
     sqlite3_stmt * st = nullptr;
     if(sqlite3_prepare_v2(s_db, sql, -1, &st, nullptr) != SQLITE_OK) {
-        EMS_LOGW(TAG, "prepare mislukt: %s", sqlite3_errmsg(s_db));
+        EMS_LOGW(TAG, "prepare mislukt: %s (%.60s)", sqlite3_errmsg(s_db), sql);
         return nullptr;
     }
     return st;
@@ -139,6 +156,111 @@ static int sq_init(void *)
 }
 static void sq_shutdown(void *) {}
 
+// De database draait in PSRAM (":memory:") en wordt periodiek in zijn geheel
+// naar LittleFS geschreven. Rechtstreeks op LittleFS (copy-on-write) liet elke
+// kleine write een groot deel van het 550 KB-bestand herschrijven: 5 rijen
+// wegschrijven kostte 45 s aan flash-erases, en tijdens elke erase ligt PSRAM
+// stil - de RGB-DMA liep dan leeg en het beeld sprong continu. Nu is er alleen
+// flash-activiteit bij het laden (boot) en bij storage_persist().
+static char s_db_path[96];
+static char s_db_tmp_path[100];
+static uint32_t s_last_persist_ms = 0;
+
+// Kopieert de hele database van src naar dst (SQLite online-backup), in
+// stukjes met een korte pauze zodat andere taken (en de idle-taak) door kunnen.
+static bool backup_db(sqlite3 * dst, sqlite3 * src)
+{
+    sqlite3_backup * b = sqlite3_backup_init(dst, "main", src, "main");
+    if(!b) {
+        EMS_LOGW(TAG, "backup starten mislukt: %s", sqlite3_errmsg(dst));
+        return false;
+    }
+    int rc;
+    do {
+        rc = sqlite3_backup_step(b, 16);
+        vTaskDelay(1);
+    } while(rc == SQLITE_OK || rc == SQLITE_BUSY || rc == SQLITE_LOCKED);
+    sqlite3_backup_finish(b);
+    return rc == SQLITE_DONE;
+}
+
+// De oude opzet (database direct op LittleFS) liet tijdelijke SQLite-
+// bestanden ("tmp_t...") in de root achter die niet verwijderd konden worden.
+static void remove_stale_temp_files(void)
+{
+    DIR * dir = opendir("/littlefs");
+    if(!dir) return;
+    struct dirent * e;
+    char path[300];
+    while((e = readdir(dir)) != nullptr) {
+        if(strncmp(e->d_name, "tmp_t", 5) == 0) {
+            snprintf(path, sizeof(path), "/littlefs/%s", e->d_name);
+            if(remove(path) == 0) EMS_LOGI(TAG, "oud tempbestand verwijderd: %s", path);
+        }
+    }
+    closedir(dir);
+}
+
+static void load_from_file(void)
+{
+    FILE * f = fopen(s_db_path, "rb");
+    if(!f) {
+        EMS_LOGI(TAG, "nog geen database op flash (%s), begint leeg", s_db_path);
+        return;
+    }
+    fclose(f);
+    sqlite3 * file_db = nullptr;
+    uint32_t t0 = millis();
+    // Lezen/schrijven i.p.v. read-only: een achtergebleven journal (oude versie
+    // schreef direct op flash) moet SQLite eerst kunnen terugdraaien.
+    if(sqlite3_open(s_db_path, &file_db) == SQLITE_OK &&
+       backup_db(s_db, file_db)) {
+        EMS_LOGI(TAG, "database geladen in %lu ms", (unsigned long) (millis() - t0));
+    } else {
+        EMS_LOGE(TAG, "database laden mislukt: %s", file_db ? sqlite3_errmsg(file_db) : "?");
+    }
+    sqlite3_close(file_db);
+}
+
+bool storage_persist(void)
+{
+    db_lock lock;
+    if(!s_db) {
+        return false;
+    }
+    uint32_t t0 = millis();
+    remove(s_db_tmp_path);
+    sqlite3 * file_db = nullptr;
+    bool ok = sqlite3_open(s_db_tmp_path, &file_db) == SQLITE_OK;
+    if(ok) {
+        // Geen journal: het tmp-bestand vervangt het origineel pas na een
+        // volledige, gesloten backup (rename is atomair op LittleFS).
+        sqlite3_exec(file_db, "PRAGMA journal_mode=OFF", nullptr, nullptr, nullptr);
+        ok = backup_db(file_db, s_db);
+    }
+    sqlite3_close(file_db);
+    if(ok) {
+        ok = rename(s_db_tmp_path, s_db_path) == 0;
+    }
+    s_last_persist_ms = millis();
+    if(ok) {
+        struct stat st;
+        long size = stat(s_db_path, &st) == 0 ? (long) st.st_size : -1;
+        EMS_LOGI(TAG, "database weggeschreven (%ld bytes) in %lu ms", size, (unsigned long) (millis() - t0));
+    } else {
+        EMS_LOGW(TAG, "database wegschrijven mislukt");
+        remove(s_db_tmp_path);
+    }
+    return ok;
+}
+
+void storage_persist_if_due(void)
+{
+    if(millis() - s_last_persist_ms >= STORAGE_PERSIST_INTERVAL_MS) {
+        storage_persist();
+    }
+}
+
 bool storage_init(const char * db_path)
 {
     if(!s_mutex) {
@@ -151,29 +273,28 @@ bool storage_init(const char * db_path)
         EMS_LOGW(TAG, "kon SQLite niet naar PSRAM laten alloceren");
     }
     sqlite3_initialize();
-    if(sqlite3_open(db_path, &s_db) != SQLITE_OK) {
-        EMS_LOGE(TAG, "kan %s niet openen: %s", db_path, sqlite3_errmsg(s_db));
+    strlcpy(s_db_path, db_path, sizeof(s_db_path));
+    snprintf(s_db_tmp_path, sizeof(s_db_tmp_path), "%s.tmp", db_path);
+    if(sqlite3_open(":memory:", &s_db) != SQLITE_OK) {
+        EMS_LOGE(TAG, "kan geen database in geheugen openen: %s", sqlite3_errmsg(s_db));
         sqlite3_close(s_db);
         s_db = nullptr;
         return false;
     }
-    // De Pi gebruikt WAL. Op de ESP32-VFS (geen gedeeld geheugen) kan dat niet;
-    // een rollback-journal beschermt even goed tegen corruptie bij stroomuitval,
-    // alleen zonder gelijktijdige lezers (die zijn er hier niet - één mutex).
-    exec("PRAGMA journal_mode=TRUNCATE");
-    // Flash-reads zijn traag; een ruime page-cache (in PSRAM, zie sq_malloc)
-    // voorkomt dat elke query de tabel opnieuw van LittleFS leest.
-    exec("PRAGMA cache_size=-512");
+    sqlite3_progress_handler(s_db, 1000, yield_progress, nullptr);
     exec("PRAGMA temp_store=MEMORY");
+    remove_stale_temp_files();
+    load_from_file();
+    s_last_persist_ms = millis();
     if(!exec(SCHEMA)) {
         return false;
     }
     // ESP32-toevoeging (niet in storage.py): index voor expected_consumption()'s
-    // WHERE quarter_of_day/is_weekend/date - 192 query's per dagcurve zijn
-    // zonder index op flash ~0,4 s per stuk. Verandert geen enkele uitkomst.
+    // WHERE quarter_of_day/is_weekend/date - 192 query's per dagcurve.
+    // Verandert geen enkele uitkomst.
     exec("CREATE INDEX IF NOT EXISTS idx_consumption_quarter_weekend_date "
          "ON consumption_quarterly(quarter_of_day, is_weekend, date)");
-    EMS_LOGI(TAG, "database geopend: %s", db_path);
+    EMS_LOGI(TAG, "database geopend (in PSRAM, bron %s)", db_path);
     return true;
 }
 
@@ -181,6 +302,7 @@ void storage_close(void)
 {
     db_lock lock;
     if(s_db) {
+        storage_persist();
         sqlite3_close(s_db);
         s_db = nullptr;
     }
@@ -272,17 +394,36 @@ void storage_savings_flush(void)
     strftime(date, sizeof(date), "%Y-%m-%d", &local);
     int quarter = (local.tm_hour * 60 + local.tm_min) / 15;
 
-    sqlite3_stmt * st = prepare(
-        "INSERT INTO savings_quarterly (date, quarter_of_day, batterij_eur, ems_eur) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(date, quarter_of_day) DO UPDATE SET "
-        "batterij_eur = batterij_eur + excluded.batterij_eur, ems_eur = ems_eur + excluded.ems_eur");
+    // Geen "ON CONFLICT ... DO UPDATE": Sqlite3Esp32 bouwt SQLite met
+    // YYSTACKDEPTH 20 en daarvoor is de parser-stack dan te klein. Dus eerst
+    // de rij aanmaken (als hij nog niet bestaat) en daarna optellen.
+    bool ok = false;
+    exec("BEGIN");
+    sqlite3_stmt * st = prepare("INSERT OR IGNORE INTO savings_quarterly (date, quarter_of_day, batterij_eur, ems_eur) "
+                                "VALUES (?, ?, 0, 0)");
     if(st) {
         sqlite3_bind_text(st, 1, date, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(st, 2, quarter);
-        sqlite3_bind_double(st, 3, s_savings_batterij);
-        sqlite3_bind_double(st, 4, s_savings_ems);
-        sqlite3_step(st);
+        ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
+    }
+    st = ok ? prepare("UPDATE savings_quarterly SET batterij_eur = batterij_eur + ?, ems_eur = ems_eur + ? "
+                      "WHERE date = ? AND quarter_of_day = ?")
+            : nullptr;
+    ok = false;
+    if(st) {
+        sqlite3_bind_double(st, 1, s_savings_batterij);
+        sqlite3_bind_double(st, 2, s_savings_ems);
+        sqlite3_bind_text(st, 3, date, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(st, 4, quarter);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+        sqlite3_finalize(st);
+    }
+    exec(ok ? "COMMIT" : "ROLLBACK");
+    if(!ok) {
+        // Bedragen bewaren voor de volgende flush i.p.v. ze kwijt te raken.
+        EMS_LOGW(TAG, "Flush savings mislukt: %s", sqlite3_errmsg(s_db));
+        return;
     }
     EMS_LOGI(TAG, "Flushed savings: batterij=%.4f ems=%.4f EUR", s_savings_batterij, s_savings_ems);
     s_savings_batterij = 0.0;
@@ -306,8 +447,7 @@ double storage_load_pool_state(void)
 void storage_save_pool_state(double shadow_soc_kwh)
 {
     db_lock lock;
-    sqlite3_stmt * st = prepare("INSERT INTO battery_pool_state (id, zon_kwh) VALUES (1, ?) "
-                                "ON CONFLICT(id) DO UPDATE SET zon_kwh = excluded.zon_kwh");
+    sqlite3_stmt * st = prepare("INSERT OR REPLACE INTO battery_pool_state (id, zon_kwh) VALUES (1, ?)");
     if(st) {
         sqlite3_bind_double(st, 1, shadow_soc_kwh);
         sqlite3_step(st);
@@ -401,9 +541,8 @@ int storage_aggregate_quarterly(const char * date_str, const char * source)
     int is_weekend = date_weekday(d) >= 5 ? 1 : 0;
 
     exec("BEGIN");
-    st = prepare("INSERT INTO consumption_quarterly (date, quarter_of_day, avg_power_w, is_weekend) "
-                 "VALUES (?, ?, ?, ?) ON CONFLICT(date, quarter_of_day) DO UPDATE SET "
-                 "avg_power_w = excluded.avg_power_w, is_weekend = excluded.is_weekend");
+    st = prepare("INSERT OR REPLACE INTO consumption_quarterly (date, quarter_of_day, avg_power_w, is_weekend) "
+                 "VALUES (?, ?, ?, ?)");
     for(int q = 0; st && q < QUARTERS_PER_DAY; q++) {
         if(!have[q]) continue;
         sqlite3_bind_text(st, 1, date_str, -1, SQLITE_TRANSIENT);
@@ -632,8 +771,7 @@ int storage_write_solar_forecast(const storage_solar_row_t * rows, int n)
         return 0;
     }
     exec("BEGIN");
-    sqlite3_stmt * st = prepare("INSERT INTO solar_forecast (date, hour, forecast_w) VALUES (?, ?, ?) "
-                                "ON CONFLICT(date, hour) DO UPDATE SET forecast_w = excluded.forecast_w");
+    sqlite3_stmt * st = prepare("INSERT OR REPLACE INTO solar_forecast (date, hour, forecast_w) VALUES (?, ?, ?)");
     for(int i = 0; st && i < n; i++) {
         sqlite3_bind_text(st, 1, rows[i].date, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(st, 2, rows[i].hour);
@@ -793,6 +931,27 @@ int storage_export_battery_log_csv(storage_write_fn write, void * ctx)
     return n;
 }
 
+// ---------------------------------------------------------------- reset
+
+bool storage_reset_savings(char * error_out, int error_out_size)
+{
+    db_lock lock;
+    char * err = nullptr;
+    int rc = sqlite3_exec(s_db, "BEGIN; DELETE FROM savings_quarterly; DELETE FROM battery_pool_state; COMMIT;",
+                          nullptr, nullptr, &err);
+    if(rc != SQLITE_OK) {
+        snprintf(error_out, error_out_size, "kon besparingsdata niet resetten: %s", err ? err : "?");
+        sqlite3_free(err);
+        exec("ROLLBACK");
+        return false;
+    }
+    s_savings_batterij = 0.0;
+    s_savings_ems = 0.0;
+    EMS_LOGI(TAG, "besparingstellers gereset");
+    storage_persist();
+    return true;
+}
+
 // ---------------------------------------------------------------- import
 
 bool storage_import_from_db(const char * import_db_path, cJSON * report)
@@ -827,5 +986,6 @@ bool storage_import_from_db(const char * import_db_path, cJSON * report)
     exec(ok ? "COMMIT" : "ROLLBACK");
     exec("DETACH DATABASE pi");
     EMS_LOGI(TAG, "import uit %s: %s", import_db_path, ok ? "gelukt" : "MISLUKT (teruggedraaid)");
+    if(ok) storage_persist();
     return ok;
 }

@@ -34,7 +34,8 @@
  *  - LV_STDLIB_RTTHREAD
  *  - LV_STDLIB_CUSTOM: Custom (implemented externally)
  */
-#define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB
+/* ESP32: eigen allocator in PSRAM, zie src/ems/board/lv_mem_psram.c. */
+#define LV_USE_STDLIB_MALLOC LV_STDLIB_CUSTOM
 
 /** String functions source
  *  Possible values:
@@ -1034,7 +1035,7 @@
 #define LV_FONT_MONTSERRAT_28 1
 
 /** Montserrat 30 */
-#define LV_FONT_MONTSERRAT_30 0
+#define LV_FONT_MONTSERRAT_30 1
 
 /** Montserrat 32 */
 #define LV_FONT_MONTSERRAT_32 1

@@ -1,8 +1,14 @@
 // LovyanGFX-configuratie voor het CrowPanel Advance 4.3" hardware V1.0.
 // Pinnen/timing 1-op-1 uit Elecrow's example/V1.0/example_code4.3/lesson-03
-// (LovyanGFX_Driver.h), behalve de pixelklok: 16 MHz zoals Elecrow's V1.1-V1.3-
-// code voor hetzelfde paneel - bij 21 MHz flikkerde het beeld zonder hun
-// ESP32S3_120M-core (zie src/elecrow_lesson03/LovyanGFX_Driver.h).
+// (LovyanGFX_Driver.h), behalve de pixelklok (zie freq_write): bij Elecrow's
+// 21 MHz flikkerde het beeld zonder hun ESP32S3_120M-core (zie
+// src/elecrow_lesson03/LovyanGFX_Driver.h).
+// LovyanGFX i.p.v. ESP-IDF's esp_lcd: beide getest (oktober 2026), met
+// identieke LCD_CAM-registers. esp_lcd stopt bij elke vsync het hele LCD-blok
+// om de DMA te herstarten en liet het beeld met de EMS-belasting "alle kanten
+// op" springen; LovyanGFX herstart alleen de DMA (FIFO-inhoud overgeslagen) en
+// is veel rustiger. Bounce buffers bleken te traag (memcpy uit PSRAM ~20 MB/s
+// met de 32-byte cache-lines van de Arduino-libs).
 #pragma once
 
 #define LGFX_USE_V1
@@ -10,10 +16,16 @@
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
 
+// Panel_RGB met toegang tot de framebuffer (voor /api/screenshot).
+class Panel_RGB_FB : public lgfx::Panel_RGB {
+ public:
+  const uint16_t* frameBuffer() const { return (const uint16_t*)_frame_buffer; }
+};
+
 class LGFX_CrowPanelV10 : public lgfx::LGFX_Device {
  public:
   lgfx::Bus_RGB _bus_instance;
-  lgfx::Panel_RGB _panel_instance;
+  Panel_RGB_FB _panel_instance;
   lgfx::Touch_GT911 _touch_instance;
 
   LGFX_CrowPanelV10() {
@@ -56,6 +68,8 @@ class LGFX_CrowPanelV10 : public lgfx::LGFX_Device {
       cfg.pin_vsync = GPIO_NUM_41;
       cfg.pin_hsync = GPIO_NUM_40;
       cfg.pin_pclk = GPIO_NUM_39;
+      // 16 MHz zoals Elecrow's V1.1-V1.3-code: 240 MHz / 15, een gehele deler.
+      // 14 MHz (fractionele deler) liet het beeld met de EMS-firmware springen.
       cfg.freq_write = 16000000;
 
       cfg.hsync_polarity = 0;

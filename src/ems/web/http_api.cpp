@@ -8,6 +8,10 @@
 #include <time.h>
 
 #include "../board/board.h"
+
+extern "C" {
+#include "../ui/dashboard_ui.h"
+}
 #include "../config/config.h"
 #include "../daemon/daemon.h"
 #include "../core/log.h"
@@ -96,24 +100,24 @@ static void handle_files(void)
     cJSON_Delete(arr);
 }
 
-// Schermafdruk van het actieve LVGL-scherm als 24-bit BMP - zodat de layout
-// van de geporte schermen op afstand te controleren is (fase 7).
+// Schermafdruk als 24-bit BMP, rechtstreeks uit de framebuffer van het paneel
+// (dus precies wat er op het scherm staat) - zodat de layout van de geporte
+// schermen op afstand te controleren is (fase 7). Geen lv_snapshot meer: die
+// tekende het scherm opnieuw in een buffer van 1,15 MB PSRAM en de WiFi-
+// zender liep dan vast op PSRAM-verkeer (task-watchdog). Elke regel wordt
+// eerst naar een kleine buffer in intern RAM omgezet.
 static void handle_screenshot(void)
 {
-    board_lvgl_lock();
-    lv_draw_buf_t * snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB888);
-    board_lvgl_unlock();
-    if(!snap) {
-        s_server.send(500, "text/plain", "snapshot failed (geheugen?)");
+    const uint16_t * fb = board_framebuffer();
+    if(!fb) {
+        s_server.send(500, "text/plain", "geen framebuffer");
         return;
     }
 
-    const uint32_t w = snap->header.w;
-    const uint32_t h = snap->header.h;
-    const uint32_t stride = snap->header.stride;
-    const uint32_t row_bytes = w * 3;
-    const uint32_t row_padded = (row_bytes + 3) & ~3u;
-    const uint32_t data_size = row_padded * h;
+    const uint32_t w = BOARD_LCD_H_RES;
+    const uint32_t h = BOARD_LCD_V_RES;
+    const uint32_t row_bytes = w * 3;  // 2400, al een veelvoud van 4
+    const uint32_t data_size = row_bytes * h;
 
     uint8_t hdr[54] = {0};
     hdr[0] = 'B';
@@ -137,18 +141,18 @@ static void handle_screenshot(void)
     s_server.send(200, "image/bmp", "");
     s_server.sendContent((const char *) hdr, sizeof(hdr));
 
-    // LVGL's RGB888 ligt in geheugen als B,G,R - precies BMP's volgorde.
-    static uint8_t pad[3] = {0};
+    static uint8_t row[BOARD_LCD_H_RES * 3];
     for(int32_t y = h - 1; y >= 0; y--) {
-        s_server.sendContent((const char *) snap->data + y * stride, row_bytes);
-        if(row_padded != row_bytes) {
-            s_server.sendContent((const char *) pad, row_padded - row_bytes);
+        const uint16_t * src = fb + y * w;
+        for(uint32_t x = 0; x < w; x++) {
+            uint16_t c = src[x];
+            uint8_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+            row[x * 3 + 0] = (b << 3) | (b >> 2);
+            row[x * 3 + 1] = (g << 2) | (g >> 4);
+            row[x * 3 + 2] = (r << 3) | (r >> 2);
         }
+        s_server.sendContent((const char *) row, row_bytes);
     }
-
-    board_lvgl_lock();
-    lv_draw_buf_destroy(snap);
-    board_lvgl_unlock();
 }
 
 // GET /api/config?name=x.json -> inhoud; PUT /api/config?name=x.json (body =
@@ -432,6 +436,14 @@ void http_api_start(const char * write_token)
     s_server.on("/api/import", HTTP_POST, handle_import);
     s_server.on("/api/debug/storage", HTTP_GET, handle_debug_storage);
     s_server.on("/api/debug/plan", HTTP_POST, handle_debug_plan);
+    // Wissel van tab (0=Energiestromen ... 5=Besparing) - voor screenshots op afstand.
+    s_server.on("/api/debug/tab", HTTP_GET, []() {
+        int i = s_server.arg("i").toInt();
+        board_lvgl_lock();
+        dashboard_ui_select_tab(i);
+        board_lvgl_unlock();
+        s_server.send(200, "text/plain", "ok");
+    });
     // Vervangen /home/pi/consumption_quarterly.csv en battery_log.csv van de Pi.
     s_server.on("/export/consumption_quarterly.csv", HTTP_GET,
                 []() { send_csv(storage_export_consumption_csv, "consumption_quarterly.csv"); });

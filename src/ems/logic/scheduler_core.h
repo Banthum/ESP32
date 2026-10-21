@@ -59,6 +59,12 @@ void sched_simulate_plan(int n, const double * import_prices, const double * exp
                          double soc_start_kwh, const sched_battery_t * battery, sched_sim_result_t * out);
 
 // candidate_lengths NULL -> 1..8 (15 min .. 2 uur), zoals de Python-default.
+// Wordt tijdens het zoeken elke 64 scenario's aangeroepen: op de ESP32 geeft
+// de daemon hier even de CPU af (een plan kan >5 s rekenen; anders grijpt de
+// task-watchdog in). nullptr = niets (standaard, en in de unit-tests).
+typedef void (*sched_yield_fn)(void);
+void sched_set_yield_hook(sched_yield_fn fn);
+
 void sched_find_best_plan(int n, const double * import_prices, const double * export_prices, const double * load_kwh,
                           const double * solar_kwh, double soc_start_kwh, const sched_battery_t * battery,
                           const int * candidate_lengths, int n_lengths, int max_windows, int max_block_windows,
