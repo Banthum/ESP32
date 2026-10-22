@@ -3,7 +3,7 @@
 param([string]$PiHttp = "192.168.2.96:8080", [string]$Esp = "192.168.2.251")
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$secrets = Get-Content (Join-Path $root "src\ems\secrets.h") -Raw
+$secrets = Get-Content (Join-Path $root "src\bms\secrets.h") -Raw
 $token = ([regex]::Match($secrets, '#define\s+OTA_PASSWORD\s+"((?:[^"\\]|\\.)*)"')).Groups[1].Value -replace '\\(.)', '$1'
 $headers = @{ "X-BMS-Token" = $token }
 

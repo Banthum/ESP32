@@ -11,8 +11,8 @@ backup/
 # Gedownloade Elecrow-binaries (opnieuw op te halen uit hun GitHub-repo)
 firmware/
 
-# Eigen WiFi-/OTA-wachtwoorden (sjabloon: src/ems/secrets.example.h)
-src/ems/secrets.h
+# Eigen WiFi-/OTA-wachtwoorden (sjabloon: src/bms/secrets.example.h)
+src/bms/secrets.h
 
 # Gegevens van de Pi voor de historie-import (bevatten persoonlijke meetdata)
 import/
@@ -24,4 +24,4 @@ import/
 /CMakeLists.txt
 /dependencies.lock
 /sdkconfig.defaults
-/sdkconfig.ems_xip
+/sdkconfig.bms_xip

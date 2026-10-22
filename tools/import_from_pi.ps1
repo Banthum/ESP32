@@ -12,8 +12,8 @@ $root = Split-Path -Parent $PSScriptRoot
 $importDir = Join-Path $root "import"
 New-Item -ItemType Directory -Force $importDir | Out-Null
 
-# Token = OTA_PASSWORD uit src/ems/secrets.h (wordt niet getoond).
-$secrets = Get-Content (Join-Path $root "src\ems\secrets.h") -Raw
+# Token = OTA_PASSWORD uit src/bms/secrets.h (wordt niet getoond).
+$secrets = Get-Content (Join-Path $root "src\bms\secrets.h") -Raw
 $token = ([regex]::Match($secrets, '#define\s+OTA_PASSWORD\s+"((?:[^"\\]|\\.)*)"')).Groups[1].Value -replace '\\(.)', '$1'
 $headers = @{ "X-BMS-Token" = $token }
 

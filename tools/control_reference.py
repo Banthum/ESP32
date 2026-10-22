@@ -1,9 +1,9 @@
-"""Referentie voor de batterij-aansturing (src/ems/logic/battery_control.cpp).
+"""Referentie voor de batterij-aansturing (src/bms/logic/battery_control.cpp).
 
 Draait het ORIGINELE enforce/verify-blok uit de Pi's dashboard_daemon.py (niet
 een overgetypte kopie) op gesimuleerde en echte scenario's, en schrijft per
 cyclus de invoer + de uitkomst van de Pi-code naar
-test/test_ems_logic/control_vectors.h. De board-test (pio test -e ems_test)
+test/test_bms_logic/control_vectors.h. De board-test (pio test -e bms_test)
 voert dezelfde invoer door de C++-port en eist exact dezelfde uitkomst.
 
 Bron: dashboard_daemon.py uit de Pi-back-up (home_pi.tar.gz) of een los .py-bestand.
@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BACKUP = os.path.join(os.path.dirname(ROOT), "Pi-backup-2026-10-22")
 TAR_MEMBER = "./EMS/dashboard/dashboard_daemon.py"
-OUT = os.path.join(ROOT, "test", "test_ems_logic", "control_vectors.h")
+OUT = os.path.join(ROOT, "test", "test_bms_logic", "control_vectors.h")
 
 # Begin/eind van de twee stukken die geport zijn (zie battery_control.h).
 INIT_START = "_startup_mode = marstek_client.get_mode()"

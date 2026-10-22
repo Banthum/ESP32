@@ -1,5 +1,5 @@
 """Zet web/static/ (de website van de Pi, dashboard-web/static) om naar
-src/ems/web/web_assets.h, zodat de website in de firmware zit: één image voor
+src/bms/web/web_assets.h, zodat de website in de firmware zit: één image voor
 elk bord, niets per apparaat te uploaden.
 
 index.html krijgt app.js/style.css met ?v=<inhoudshash> erachter - hetzelfde
@@ -12,7 +12,7 @@ import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC = os.path.join(ROOT, "web", "static")
-OUT = os.path.join(ROOT, "src", "ems", "web", "web_assets.h")
+OUT = os.path.join(ROOT, "src", "bms", "web", "web_assets.h")
 TYPES = {".html": "text/html", ".js": "application/javascript", ".css": "text/css"}
 
 
