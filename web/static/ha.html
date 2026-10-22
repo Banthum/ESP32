@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMSmachine - Home Assistant</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+    <h1>Home Assistant-integratie</h1>
+    <a href="index.html" class="ha-back-link">&larr; dashboard</a>
+</header>
+<main>
+    <p>
+        Dit haalt alleen gegevens van het Batterij-tabblad op voor inzicht in je
+        eigen Home Assistant &mdash; de actieve aansturing van de batterij blijft
+        volledig bij EMSmachine zelf, hier verandert niets aan.
+    </p>
+    <p>
+        Plak het blokje hieronder in je eigen <code>configuration.yaml</code> en
+        herstart Home Assistant (of herlaad de YAML-configuratie). De adressen
+        hieronder zijn al ingevuld op basis van hoe je deze pagina nu bereikt.
+    </p>
+    <div class="stat-row">
+        <div class="stat"><div class="label">Endpoint</div><div class="value" id="ha-endpoint" style="font-size:14px">-</div></div>
+    </div>
+    <h3>configuration.yaml</h3>
+    <pre id="yaml-block"><code id="yaml-snippet">laden...</code></pre>
+    <button id="copy-btn" type="button">Kopieer</button>
+    <span id="copy-status"></span>
+    <p class="savings-explainer">
+        Eén EMSmachine-unit per klant is de huidige aanname &mdash; dit adres
+        verandert dus niet zolang er maar één unit op dit netwerk staat.
+    </p>
+</main>
+<script>
+(function() {
+    var base = location.protocol + "//" + location.host;
+    var endpoint = base + "/api/battery";
+    document.getElementById("ha-endpoint").textContent = endpoint;
+
+    var yaml = [
+        "rest:",
+        "  - resource: \"" + endpoint + "\"",
+        "    scan_interval: 30",
+        "    sensor:",
+        "      - name: \"EMS batterijvermogen\"",
+        "        unique_id: ems_battery_power_w",
+        "        value_template: \"{{ value_json.battery_power_w }}\"",
+        "        unit_of_measurement: \"W\"",
+        "        device_class: power",
+        "        state_class: measurement",
+        "      - name: \"EMS batterij SOC\"",
+        "        unique_id: ems_battery_soc_pct",
+        "        value_template: \"{{ value_json.battery_soc_pct }}\"",
+        "        unit_of_measurement: \"%\"",
+        "        device_class: battery",
+        "        state_class: measurement",
+        "      - name: \"EMS batterijstatus\"",
+        "        unique_id: ems_battery_state",
+        "        value_template: \"{{ value_json.battery_state }}\"",
+        "      - name: \"EMS batterijcapaciteit\"",
+        "        unique_id: ems_battery_capacity_kwh",
+        "        value_template: \"{{ value_json.battery_capacity_kwh }}\"",
+        "        unit_of_measurement: \"kWh\"",
+        "      - name: \"EMS batterijplan\"",
+        "        unique_id: ems_battery_plan",
+        "        value_template: \"{{ value_json.battery_state }}\"",
+        "        json_attributes:",
+        "          - battery_plan_eigen_zon_wh",
+        "          - battery_plan_actief_gestuurd_wh",
+        "          - battery_plan_verwacht_verbruik_wh",
+        "          - battery_plan_geblokkeerd_wh",
+        "          - battery_soc_forecast_pct",
+        "    binary_sensor:",
+        "      - name: \"EMS actieve aansturing\"",
+        "        unique_id: ems_active_control_enabled",
+        "        value_template: \"{{ value_json.battery_active_control_enabled }}\"",
+    ].join("\n");
+    document.getElementById("yaml-snippet").textContent = yaml;
+
+    document.getElementById("copy-btn").addEventListener("click", function() {
+        var status = document.getElementById("copy-status");
+        navigator.clipboard.writeText(yaml).then(function() {
+            status.textContent = "Gekopieerd!";
+        }, function() {
+            status.textContent = "Kopiëren mislukt - selecteer handmatig.";
+        });
+    });
+})();
+</script>
+</body>
+</html>

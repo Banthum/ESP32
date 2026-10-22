@@ -1,5 +1,5 @@
 // HTTP-API op poort 80 - zelfde /api/state als dashboard-web/web_server.py
-// op de Pi (poort 8080), plus diagnostiek voor ontwikkeling.
+// op de Pi (poort 8080), de website zelf (web_dashboard.h), plus diagnostiek.
 #pragma once
 
 // `write_token`: vereist in header "X-EMS-Token" voor alles wat schrijft

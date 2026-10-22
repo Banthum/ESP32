@@ -1,0 +1,329 @@
+/* Dark green-on-black theme, matching dashboard-ui's physical-screen
+   look (see dashboard_ui.c's build_header()/tab styling) - same palette,
+   not a coincidence: net=blue, zon=orange, batterij=green, home=teal. */
+:root {
+    --bg: #000000;
+    --panel-bg: #0d0d0d;
+    --accent: #006400;
+    --accent-light: #0a8f0a;
+    --text: #ffffff;
+    --text-dim: #999999;
+    --net: #2d6fe0;
+    --zon: #ff9800;
+    --batt: #50ff78;
+    --block: #ff0000;
+    --home: #00ffc8;
+    --dim: #5a5a5a;
+    --grid-line: #262626;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    height: 100%;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--grid-line);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+header h1 {
+    font-size: 18px;
+    margin: 0;
+    font-weight: 600;
+    flex: 1;
+}
+
+#status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--dim);
+    flex-shrink: 0;
+}
+#status-dot.live { background: var(--batt); }
+#status-dot.stale { background: #ff4444; }
+
+nav {
+    display: flex;
+    gap: 4px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--grid-line);
+}
+
+nav button {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--grid-line);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+nav button.active {
+    background: var(--accent);
+    color: var(--text);
+    border-color: var(--accent-light);
+}
+
+main {
+    padding: 14px;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.screen {
+    display: none;
+}
+.screen.active {
+    display: block;
+}
+
+.screen h2 {
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin: 0 0 10px 0;
+}
+
+.legend {
+    display: flex;
+    gap: 16px;
+    font-size: 13px;
+    margin-bottom: 6px;
+}
+.legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.legend .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+}
+
+canvas {
+    width: 100%;
+    height: 260px;
+    display: block;
+    background: var(--panel-bg);
+    border-radius: 8px;
+}
+
+.empty-state {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 40px 0;
+    font-size: 14px;
+}
+
+.stat-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+.stat {
+    background: var(--panel-bg);
+    border-radius: 8px;
+    padding: 10px 14px;
+    min-width: 100px;
+}
+.stat .label {
+    color: var(--text-dim);
+    font-size: 12px;
+}
+.stat .value {
+    font-size: 20px;
+    font-weight: 600;
+}
+
+/* Energiestromen */
+#energyflow-svg {
+    width: 100%;
+    height: 320px;
+    background: var(--panel-bg);
+    border-radius: 8px;
+}
+.ef-node-circle {
+    fill: #000000;
+    stroke-width: 3;
+}
+.ef-node-label {
+    fill: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+    text-anchor: middle;
+}
+.ef-node-name {
+    fill: var(--text);
+    font-size: 11px;
+    text-anchor: middle;
+}
+.ef-edge {
+    stroke-width: 3;
+    fill: none;
+}
+.ef-dot {
+    r: 5;
+}
+
+.savings-explainer {
+    color: var(--text-dim);
+    font-size: 13px;
+    max-width: 480px;
+}
+.savings-table {
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 480px;
+}
+.savings-table th, .savings-table td {
+    padding: 8px 12px;
+    text-align: right;
+    border-bottom: 1px solid var(--grid-line);
+}
+.savings-table th:first-child, .savings-table td:first-child {
+    text-align: left;
+    color: var(--text-dim);
+}
+.savings-table th {
+    color: var(--text-dim);
+    font-weight: 600;
+}
+.savings-table tbody tr:last-child td {
+    font-weight: 600;
+    border-bottom: none;
+}
+
+/* Instellingen */
+.settings-form {
+    background: var(--panel-bg);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.settings-form h3 {
+    margin: 0 0 4px 0;
+    font-size: 15px;
+    font-weight: 600;
+}
+.settings-form p {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin: 0;
+}
+.settings-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--text-dim);
+}
+.settings-form label.checkbox-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+.settings-form input[type="text"],
+.settings-form input[type="number"],
+.settings-form select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--grid-line);
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 14px;
+}
+.settings-form input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+}
+.settings-form button {
+    background: var(--accent);
+    color: var(--text);
+    border: 1px solid var(--accent-light);
+    border-radius: 6px;
+    padding: 9px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    align-self: flex-start;
+}
+.settings-form button.danger {
+    background: #4a0d0d;
+    border-color: #a32020;
+}
+.settings-status {
+    font-size: 13px;
+    color: var(--text-dim);
+}
+.settings-status.ok { color: var(--batt); }
+.settings-status.err { color: #ff4444; }
+
+/* ha.html - Home Assistant export page */
+.ha-back-link {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 13px;
+    white-space: nowrap;
+}
+.ha-back-link:hover {
+    color: var(--text);
+}
+main code {
+    background: var(--panel-bg);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 13px;
+}
+main pre {
+    background: var(--panel-bg);
+    border-radius: 8px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+}
+main pre code {
+    background: none;
+    padding: 0;
+}
+#copy-btn {
+    background: var(--accent);
+    color: var(--text);
+    border: 1px solid var(--accent-light);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+}
+#copy-status {
+    margin-left: 10px;
+    color: var(--text-dim);
+    font-size: 13px;
+}

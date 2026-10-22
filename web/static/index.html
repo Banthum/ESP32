@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMSmachine dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+    <h1>EMSmachine dashboard</h1>
+    <a href="ha.html" class="ha-back-link" title="Batterijdata uitlezen in je eigen Home Assistant">Home Assistant</a>
+    <div id="status-dot" title="verbindingsstatus"></div>
+</header>
+<nav>
+    <button data-screen="energyflow" class="active">Energiestromen</button>
+    <button data-screen="price">Kosten</button>
+    <button data-screen="consumption">Verbruik</button>
+    <button data-screen="solar">Zon</button>
+    <button data-screen="battery">Batterij</button>
+    <button data-screen="savings">Besparing</button>
+    <button data-screen="settings">Instellingen</button>
+</nav>
+<main>
+    <section id="screen-energyflow" class="screen active">
+        <h2>Energiestromen</h2>
+        <svg id="energyflow-svg" viewBox="0 0 480 320"></svg>
+    </section>
+
+    <section id="screen-price" class="screen">
+        <h2>Energiekosten (EUR/kWh)</h2>
+        <div class="legend">
+            <span><i class="swatch" style="background:var(--net)"></i>inkoop</span>
+            <span><i class="swatch" style="background:var(--batt)"></i>teruglevering</span>
+            <span id="gas-legend"><i class="swatch" style="background:var(--zon)"></i>gas</span>
+        </div>
+        <canvas id="price-chart"></canvas>
+    </section>
+
+    <section id="screen-consumption" class="screen">
+        <h2>Verwacht verbruik (kW)</h2>
+        <div class="legend">
+            <span><i class="swatch" style="background:var(--dim)"></i>verwacht</span>
+            <span><i class="swatch" style="background:var(--batt)"></i>werkelijk</span>
+        </div>
+        <canvas id="consumption-chart"></canvas>
+    </section>
+
+    <section id="screen-solar" class="screen">
+        <h2>Zonverwachting + verbruik (kW)</h2>
+        <div class="legend">
+            <span><i class="swatch" style="background:var(--zon)"></i>zonverwachting</span>
+            <span><i class="swatch" style="background:var(--dim)"></i>verwacht verbruik</span>
+        </div>
+        <canvas id="solar-chart"></canvas>
+    </section>
+
+    <section id="screen-battery" class="screen">
+        <h2>Batterij</h2>
+        <div class="stat-row">
+            <div class="stat"><div class="label">Lading</div><div class="value" id="batt-soc">- %</div></div>
+            <div class="stat"><div class="label">Vermogen</div><div class="value" id="batt-power">- W</div></div>
+            <div class="stat"><div class="label">Capaciteit</div><div class="value" id="batt-capacity">- kWh</div></div>
+        </div>
+        <h3>Planning (vandaag + morgen)</h3>
+        <div class="legend">
+            <span><i class="swatch" style="background:var(--zon)"></i>zonoverschot</span>
+            <span><i class="swatch" style="background:var(--net)"></i>actief geladen</span>
+            <span><i class="swatch" style="background:var(--dim)"></i>verwacht verbruik</span>
+            <span><i class="swatch" style="background:var(--block)"></i>geblokkeerd</span>
+            <span><i class="swatch" style="background:var(--batt)"></i>Batterijlading (SOC%)</span>
+        </div>
+        <canvas id="battery-plan-chart"></canvas>
+    </section>
+
+    <section id="screen-savings" class="screen">
+        <h2>Besparing</h2>
+        <p class="savings-explainer">
+            <strong>Batterij</strong>: waarde van zon opslaan en later zelf gebruiken.
+            <strong>EMS</strong>: extra waarde van slim inkopen op een goedkoop moment.
+        </p>
+        <table class="savings-table">
+            <thead>
+                <tr><th></th><th>Batterij</th><th>EMS</th><th>Totaal</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Vandaag</td><td id="sav-dag-batterij">-</td><td id="sav-dag-ems">-</td><td id="sav-dag-totaal">-</td></tr>
+                <tr><td>Deze week</td><td id="sav-week-batterij">-</td><td id="sav-week-ems">-</td><td id="sav-week-totaal">-</td></tr>
+                <tr><td>Deze maand</td><td id="sav-maand-batterij">-</td><td id="sav-maand-ems">-</td><td id="sav-maand-totaal">-</td></tr>
+                <tr><td>Dit jaar</td><td id="sav-jaar-batterij">-</td><td id="sav-jaar-ems">-</td><td id="sav-jaar-totaal">-</td></tr>
+                <tr><td>Altijd</td><td id="sav-altijd-batterij">-</td><td id="sav-altijd-ems">-</td><td id="sav-altijd-totaal">-</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section id="screen-settings" class="screen">
+        <h2>Instellingen</h2>
+
+        <form id="form-solar" class="settings-form">
+            <h3>Zon</h3>
+            <label class="checkbox-row"><input type="checkbox" id="solar-no-panels"> Geen zonnepanelen</label>
+            <div id="solar-fields">
+                <label>Postcode <input type="text" id="solar-postcode" placeholder="1234AB"></label>
+                <label>Huisnummer <input type="text" id="solar-huisnummer"></label>
+                <label>Aantal panelen <input type="number" id="solar-panel-count" min="1" step="1"></label>
+                <label>Wp per paneel <input type="number" id="solar-panel-wp" min="1" step="1"></label>
+                <label>Dakoriëntatie
+                    <select id="solar-richting">
+                        <option value="zuid">Zuid</option>
+                        <option value="zuidoost">Zuidoost</option>
+                        <option value="zuidwest">Zuidwest</option>
+                        <option value="oost">Oost</option>
+                        <option value="west">West</option>
+                        <option value="plat">Plat</option>
+                    </select>
+                </label>
+                <label>Kantelhoek (0-90) <input type="number" id="solar-declination" min="0" max="90" step="1"></label>
+                <label>Azimuth (-180 tot 180) <input type="number" id="solar-azimuth" min="-180" max="180" step="1"></label>
+                <label>Kalibratiefactor <input type="number" id="solar-forecast-factor" min="0.01" step="0.01"></label>
+            </div>
+            <button type="submit">Opslaan</button>
+            <span class="settings-status" id="status-solar"></span>
+        </form>
+
+        <form id="form-battery" class="settings-form">
+            <h3>Batterij</h3>
+            <label>Capaciteit (kWh) <input type="number" id="batt-capacity-input" min="0.01" step="0.01"></label>
+            <label>Max vermogen (W) <input type="number" id="batt-max-power" min="1" step="1"></label>
+            <label class="checkbox-row"><input type="checkbox" id="batt-active-control"> Actieve aansturing aan</label>
+            <label>Min SOC (%) <input type="number" id="batt-min-soc" min="0" max="99" step="1"></label>
+            <label>Max SOC (%) <input type="number" id="batt-max-soc" min="1" max="100" step="1"></label>
+            <label>Energieverlies (%) <input type="number" id="batt-energy-loss" min="0" max="99" step="1"></label>
+            <button type="submit">Opslaan</button>
+            <span class="settings-status" id="status-battery"></span>
+        </form>
+
+        <form id="form-gas" class="settings-form">
+            <h3>Gas</h3>
+            <label class="checkbox-row"><input type="checkbox" id="gas-enabled"> Gaslijn tonen op Kosten-tab</label>
+            <label>Eenheid
+                <select id="gas-unit">
+                    <option value="kwh">EUR/kWh</option>
+                    <option value="m3">EUR/m3</option>
+                </select>
+            </label>
+            <button type="submit">Opslaan</button>
+            <span class="settings-status" id="status-gas"></span>
+        </form>
+
+        <form id="form-savings-reset" class="settings-form">
+            <h3>Besparingen</h3>
+            <p>Wist alle historische besparingsdata (dag/week/maand/jaar/altijd) permanent. Niet ongedaan te maken.</p>
+            <button type="submit" class="danger">Besparingen resetten</button>
+            <span class="settings-status" id="status-savings-reset"></span>
+        </form>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

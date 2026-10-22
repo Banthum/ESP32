@@ -28,6 +28,15 @@ void daemon_start(void);
 // instellingenscherm) - vervangt "systemctl restart dashboard-daemon".
 void daemon_reload_config(void);
 
+// Testvenster (alleen LIVE-build, aansturing aan): `seconds` lang de beslissing
+// van de planner vervangen door `action` ("charge"/"block"/"auto"), via
+// precies dezelfde aansturing als een gepland venster. power_w NAN = wat de
+// planner zou gebruiken (laden: -max_power_w). Na afloop meteen terug naar
+// het plan (de minimale laad-/blokduur geldt niet voor een test).
+// action "stop" breekt een lopende test af. false + reden bij een fout.
+bool daemon_control_test(const char * action, double power_w, double seconds, char * error_out,
+                         unsigned error_out_size);
+
 #ifdef __cplusplus
 }
 #endif

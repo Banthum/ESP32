@@ -20,6 +20,7 @@ extern "C" {
 #include "../net/net.h"
 #include "../logic/battery_scheduler.h"
 #include "../storage/storage.h"
+#include "web_dashboard.h"
 
 static const char * TAG = "http_api";
 
@@ -77,8 +78,8 @@ static void handle_state(void)
     char * json = state_bus_copy(nullptr);
     s_server.sendHeader("Cache-Control", "no-store");
     if(!json) {
-        // Zelfde idee als web_server.py: nog geen bericht = nog geen data.
-        s_server.send(503, "application/json", "{\"error\": \"no data yet\"}");
+        // Zelfde als web_server.py: nog geen bericht = null (de website wacht dan).
+        s_server.send(200, "application/json", "null");
         return;
     }
     s_server.send(200, "application/json", json);
@@ -620,6 +621,20 @@ void http_api_start(const char * write_token)
     s_server.on("/api/log", HTTP_GET, handle_log);
     s_server.on("/api/debug/pause", HTTP_GET, handle_pause);
     s_server.on("/api/debug/pattern", HTTP_GET, handle_pattern);
+    // Testvenster voor de aansturing (alleen LIVE-build), met token:
+    //   POST /api/control/test?action=charge&seconds=180[&power_w=-1000]   (action=stop breekt af)
+    s_server.on("/api/control/test", HTTP_POST, []() {
+        if(!authorized()) return;
+        double power = s_server.hasArg("power_w") ? s_server.arg("power_w").toDouble() : NAN;
+        double seconds = s_server.hasArg("seconds") ? s_server.arg("seconds").toDouble() : 180;
+        char error[128];
+        if(daemon_control_test(s_server.arg("action").c_str(), power, seconds, error, sizeof(error))) {
+            s_server.send(200, "text/plain", "ok - start in de volgende cyclus (max 10 s)");
+        } else {
+            s_server.send(400, "text/plain", error);
+        }
+    });
+    web_dashboard_register(s_server);
     s_server.onNotFound([]() { s_server.send(404, "text/plain", "not found"); });
     s_server.begin();
     xTaskCreatePinnedToCore(http_task, "http", 12288, nullptr, 1, nullptr, 0); // ruim: /api/ota en import schrijven de database weg (SQLite)

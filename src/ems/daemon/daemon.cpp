@@ -111,11 +111,22 @@ typedef struct {
     bool have_last_cmd;
     ctrl_command_t last_cmd;
     time_t last_cmd_at;
+
+    // testvenster (daemon_control_test)
+    bool test_active;
+    plan_decision_t test_decision;
+    double test_until_s;
 } daemon_state_t;
 
 static daemon_state_t * S = nullptr;
 static volatile bool s_reload_requested = false;
 static char s_marstek_host[40];
+
+// Testverzoek van de HTTP-taak, opgepakt in de volgende cyclus.
+static portMUX_TYPE s_test_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool s_test_pending = false;
+static plan_decision_t s_test_request;
+static double s_test_request_seconds;
 
 void daemon_reload_config(void)
 {
@@ -452,14 +463,44 @@ static void control_tick(const marstek_mode_t * mode, const marstek_telemetry_t 
         EMS_LOGI(TAG, "battery_control: start, actief commando volgens de batterij: %s", last ? last : "geen");
     }
     ctrl_observe_soc(&S->ctrl, tel->battery_soc_pct_valid, tel->battery_soc_pct);
-    if(!S->battery.active_control_enabled || !S->has_raw_decision) {
+    double now = monotonic_s();
+
+    // Testvenster starten/afronden.
+    if(s_test_pending) {
+        portENTER_CRITICAL(&s_test_mux);
+        plan_decision_t req = s_test_request;
+        double seconds = s_test_request_seconds;
+        s_test_pending = false;
+        portEXIT_CRITICAL(&s_test_mux);
+        if(req.action == DECISION_NONE) {
+            S->test_until_s = now; // stop: hieronder afgerond
+        } else {
+            S->test_active = true;
+            S->test_decision = req;
+            S->test_until_s = now + seconds;
+            EMS_LOGI(TAG, "battery_control TEST: %s %.0fW gedurende %.0fs", ctrl_action_name(req.action), req.power_w,
+                     seconds);
+            storage_log_battery_event("control_test_start", nullptr);
+        }
+    }
+    if(S->test_active && now >= S->test_until_s) {
+        S->test_active = false;
+        // Geen minimale laad-/blokduur na een test: terug naar het plan.
+        S->ctrl.charge_started_valid = false;
+        S->ctrl.block_started_valid = false;
+        EMS_LOGI(TAG, "battery_control TEST afgelopen, terug naar het plan");
+        storage_log_battery_event("control_test_end", nullptr);
+    }
+
+    if(!S->battery.active_control_enabled || (!S->has_raw_decision && !S->test_active)) {
         return;
     }
 
+    plan_decision_t decision = S->test_active ? S->test_decision : S->raw_decision;
+    if(S->test_active) decision.remaining_s = S->test_until_s - now;
     ctrl_config_t cfg = {S->battery.max_power_w, S->battery.min_soc_pct, S->battery.max_soc_pct};
-    double now = monotonic_s();
     ctrl_step_result_t r;
-    ctrl_step(&S->ctrl, &cfg, now, &S->raw_decision, &reading, grid_valid, grid_w, &r);
+    ctrl_step(&S->ctrl, &cfg, now, &decision, &reading, grid_valid, grid_w, &r);
 
     if(r.charge_floor_applied) {
         EMS_LOGI(TAG, "battery_scheduler: plan wil stoppen met laden, maar minimale laadduur nog niet bereikt (%.0fs resterend) - blijf laden",
@@ -544,6 +585,12 @@ static cJSON * control_json(void)
     else cJSON_AddNullToObject(c, "last_sent_action");
     add_opt(c, "last_sent_power_w", S->ctrl.last_sent_power_valid, S->ctrl.last_sent_power_w);
     cJSON_AddNumberToObject(c, "commands", S->ctrl_commands);
+    if(S->test_active) {
+        cJSON * t = cJSON_AddObjectToObject(c, "test");
+        cJSON_AddStringToObject(t, "action", ctrl_action_name(S->test_decision.action));
+        cJSON_AddNumberToObject(t, "power_w", S->test_decision.power_w);
+        cJSON_AddNumberToObject(t, "remaining_s", round(S->test_until_s - monotonic_s()));
+    }
     if(S->have_last_cmd) {
         cJSON * lc = cJSON_AddObjectToObject(c, "last_command");
         cJSON_AddStringToObject(lc, "action", ctrl_action_name(S->last_cmd.action));
@@ -945,6 +992,45 @@ static void daemon_task(void * arg)
         EMS_LOGI(TAG, "cyclus klaar in %u ms", (unsigned) took);
         vTaskDelay(pdMS_TO_TICKS(PUSH_INTERVAL_S * 1000 + jitter_ms));
     }
+}
+
+bool daemon_control_test(const char * action, double power_w, double seconds, char * error_out,
+                         unsigned error_out_size)
+{
+    if(!EMS_BATTERY_CONTROL_LIVE) {
+        snprintf(error_out, error_out_size, "deze firmware stuurt de batterij niet aan (schaduw-modus)");
+        return false;
+    }
+    if(!S || !S->battery.active_control_enabled) {
+        snprintf(error_out, error_out_size, "aansturing staat uit in de batterij-instellingen");
+        return false;
+    }
+    plan_decision_t d = {DECISION_NONE, 0.0, 0.0};
+    if(strcmp(action, "charge") == 0) {
+        d.action = DECISION_CHARGE;
+        d.power_w = isnan(power_w) ? -S->battery.max_power_w : power_w;
+        if(d.power_w >= 0 || -d.power_w > S->battery.max_power_w) {
+            snprintf(error_out, error_out_size, "laadvermogen moet tussen -%.0f en 0 W liggen", S->battery.max_power_w);
+            return false;
+        }
+    } else if(strcmp(action, "block") == 0) {
+        d.action = DECISION_BLOCK;
+    } else if(strcmp(action, "auto") == 0) {
+        d.action = DECISION_AUTO;
+    } else if(strcmp(action, "stop") != 0) {
+        snprintf(error_out, error_out_size, "onbekende actie (charge/block/auto/stop): %s", action);
+        return false;
+    }
+    if(d.action != DECISION_NONE && !(seconds >= 30 && seconds <= 1800)) {
+        snprintf(error_out, error_out_size, "duur moet 30-1800 s zijn");
+        return false;
+    }
+    portENTER_CRITICAL(&s_test_mux);
+    s_test_request = d;
+    s_test_request_seconds = seconds;
+    s_test_pending = true;
+    portEXIT_CRITICAL(&s_test_mux);
+    return true;
 }
 
 void daemon_start(void)
