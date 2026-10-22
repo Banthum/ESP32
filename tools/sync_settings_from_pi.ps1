@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $secrets = Get-Content (Join-Path $root "src\ems\secrets.h") -Raw
 $token = ([regex]::Match($secrets, '#define\s+OTA_PASSWORD\s+"((?:[^"\\]|\\.)*)"')).Groups[1].Value -replace '\\(.)', '$1'
-$headers = @{ "X-EMS-Token" = $token }
+$headers = @{ "X-BMS-Token" = $token }
 
 $settings = ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 "http://$PiHttp/api/state").Content | ConvertFrom-Json).settings
 $configs = [ordered]@{

@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Force $importDir | Out-Null
 # Token = OTA_PASSWORD uit src/ems/secrets.h (wordt niet getoond).
 $secrets = Get-Content (Join-Path $root "src\ems\secrets.h") -Raw
 $token = ([regex]::Match($secrets, '#define\s+OTA_PASSWORD\s+"((?:[^"\\]|\\.)*)"')).Groups[1].Value -replace '\\(.)', '$1'
-$headers = @{ "X-EMS-Token" = $token }
+$headers = @{ "X-BMS-Token" = $token }
 
 Write-Host "[1/5] Slanke historie-DB maken op de Pi (alleen de 4 historietabellen)"
 $py = @'
@@ -63,7 +63,7 @@ Add-Type -AssemblyName System.Net.Http
 function Upload($localPath, $name) {
     $client = New-Object System.Net.Http.HttpClient
     $client.Timeout = [TimeSpan]::FromMinutes(5)
-    $client.DefaultRequestHeaders.Add("X-EMS-Token", $token)
+    $client.DefaultRequestHeaders.Add("X-BMS-Token", $token)
     $content = New-Object System.Net.Http.MultipartFormDataContent
     $bytes = [System.IO.File]::ReadAllBytes($localPath)
     $file = New-Object System.Net.Http.ByteArrayContent(, $bytes)

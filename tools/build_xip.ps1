@@ -57,5 +57,5 @@ if ($Flash -eq "usb") {
     # Alleen de app (firmware.bin); het token is het OTA_PASSWORD uit src/ems/secrets.h.
     $secrets = Get-Content (Join-Path $repo "src\ems\secrets.h") -Raw
     $token = [regex]::Match($secrets, '#define OTA_PASSWORD "(.*)"').Groups[1].Value
-    curl.exe -s -m 300 -H "X-EMS-Token: $token" -F "fw=@$(Join-Path $buildDir 'firmware.bin')" "http://$Board/api/ota"
+    curl.exe -s -m 300 -H "X-BMS-Token: $token" -F "fw=@$(Join-Path $buildDir 'firmware.bin')" "http://$Board/api/ota"
 }

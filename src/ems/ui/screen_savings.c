@@ -57,7 +57,7 @@ void screen_savings_build(lv_obj_t * parent)
     lv_obj_set_style_text_font(h_batterij, &lv_font_signage_14, 0);
 
     lv_obj_t * h_ems = lv_label_create(g_grid_root);
-    lv_label_set_text_static(h_ems, "EMS");
+    lv_label_set_text_static(h_ems, "BMS");
     lv_obj_set_pos(h_ems, COL_EMS_X, ROW_Y_START - UI_S(22));
     lv_obj_set_style_text_font(h_ems, &lv_font_signage_14, 0);
 

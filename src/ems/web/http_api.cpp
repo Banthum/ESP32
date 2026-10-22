@@ -33,8 +33,8 @@ static const char * CONFIG_WHITELIST[] = {"battery_config.json", "gas_config.jso
 
 static bool authorized(void)
 {
-    if(s_write_token[0] == '\0' || s_server.header("X-EMS-Token") != s_write_token) {
-        s_server.send(401, "text/plain", "missing/invalid X-EMS-Token");
+    if(s_write_token[0] == '\0' || s_server.header("X-BMS-Token") != s_write_token) {
+        s_server.send(401, "text/plain", "missing/invalid X-BMS-Token");
         return false;
     }
     return true;
@@ -221,7 +221,7 @@ static void handle_upload_chunk(void)
         for(const char * w : UPLOAD_WHITELIST) {
             if(s_upload_name == w) allowed = true;
         }
-        bool token_ok = s_write_token[0] != '\0' && s_server.header("X-EMS-Token") == s_write_token;
+        bool token_ok = s_write_token[0] != '\0' && s_server.header("X-BMS-Token") == s_write_token;
         if(allowed && token_ok) {
             String path = String("/littlefs/ems/") + s_upload_name + ".part";
             s_upload_file = fopen(path.c_str(), "wb");
@@ -262,7 +262,7 @@ static void handle_upload_done(void)
 // Alternatief voor ArduinoOTA/espota: daarbij moet het bord een TCP-verbinding
 // terug naar de pc openen, en die blokkeert de Windows-firewall op een
 // "openbaar" netwerk. Hier stuurt de pc alles naar het bord:
-//     curl -H "X-EMS-Token: <OTA_PASSWORD>" -F fw=@firmware.bin http://<bord>/api/ota
+//     curl -H "X-BMS-Token: <OTA_PASSWORD>" -F fw=@firmware.bin http://<bord>/api/ota
 static bool s_ota_ok = false;
 static bool s_ota_started = false;
 
@@ -272,7 +272,7 @@ static void handle_ota_chunk(void)
     if(up.status == UPLOAD_FILE_START) {
         s_ota_ok = false;
         s_ota_started = false;
-        bool token_ok = s_write_token[0] != '\0' && s_server.header("X-EMS-Token") == s_write_token;
+        bool token_ok = s_write_token[0] != '\0' && s_server.header("X-BMS-Token") == s_write_token;
         if(!token_ok) return;
         EMS_LOGI(TAG, "firmware-update via HTTP gestart");
         storage_persist(); // database staat in PSRAM - niet kwijtraken bij de herstart
@@ -591,7 +591,7 @@ static void http_task(void * arg)
 void http_api_start(const char * write_token)
 {
     snprintf(s_write_token, sizeof(s_write_token), "%s", write_token ? write_token : "");
-    const char * headers[] = {"X-EMS-Token"};
+    const char * headers[] = {"X-BMS-Token"};
     s_server.collectHeaders(headers, 1);
 
     s_server.on("/api/health", HTTP_GET, handle_health);
