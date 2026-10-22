@@ -5,6 +5,7 @@
 #include "marstek_client.h"
 
 #include <lwip/sockets.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -61,13 +62,18 @@ void marstek_reset_call_stats(void)
 
 // Eén JSON-RPC-over-UDP-rondreis, MARSTEK_MAX_ATTEMPTS pogingen. Geeft het
 // "result"-object terug (aanroeper doet cJSON_Delete op de teruggegeven
-// wrapper via *root_out), of NULL. Bewust zonder `config`-parameter: de
-// schrijfkant van de API wordt op de ESP32 nooit aangeroepen.
-static cJSON * call(const char * host, const char * method, cJSON ** root_out)
+// wrapper via *root_out), of NULL. config_json (of NULL) komt onder
+// params["config"], zoals de schrijfcommando's verwachten.
+static cJSON * call(const char * host, const char * method, cJSON ** root_out, const char * config_json = nullptr)
 {
     const int msg_id = 1;
-    char payload[96];
-    snprintf(payload, sizeof(payload), "{\"id\": %d, \"method\": \"%s\", \"params\": {\"id\": 0}}", msg_id, method);
+    char payload[256];
+    if(config_json) {
+        snprintf(payload, sizeof(payload), "{\"id\": %d, \"method\": \"%s\", \"params\": {\"id\": 0, \"config\": %s}}",
+                 msg_id, method, config_json);
+    } else {
+        snprintf(payload, sizeof(payload), "{\"id\": %d, \"method\": \"%s\", \"params\": {\"id\": 0}}", msg_id, method);
+    }
 
     struct sockaddr_in dest = {};
     dest.sin_family = AF_INET;
@@ -185,3 +191,35 @@ marstek_mode_t marstek_get_mode(const char * host)
     cJSON_Delete(root);
     return m;
 }
+
+#if EMS_BATTERY_CONTROL_LIVE
+// Met de hand achterhaald protocol, zie marstek_client.py.
+static const char * METHOD_ES_SET_MODE = "ES.SetMode";
+
+bool marstek_write_passive_mode(const char * host, double power_w, double duration_s)
+{
+    // Python: int(round(power_w)) - round() rondt .5 af naar even, net als nearbyint().
+    char config[128];
+    snprintf(config, sizeof(config), "{\"mode\": \"Passive\", \"passive_cfg\": {\"power\": %d, \"cd_time\": %d}}",
+             (int) nearbyint(power_w), (int) duration_s);
+    cJSON * root = nullptr;
+    bool ack = call(host, METHOD_ES_SET_MODE, &root, config) != nullptr;
+    cJSON_Delete(root);
+    if(!ack) {
+        EMS_LOGW(TAG, "write_passive_mode(%gW, %gs): no ack from battery", power_w, duration_s);
+    }
+    return ack;
+}
+
+bool marstek_write_auto_mode(const char * host)
+{
+    // auto_cfg.enable=1 is nodig, ook al lijkt het dubbel met mode="Auto".
+    cJSON * root = nullptr;
+    bool ack = call(host, METHOD_ES_SET_MODE, &root, "{\"mode\": \"Auto\", \"auto_cfg\": {\"enable\": 1}}") != nullptr;
+    cJSON_Delete(root);
+    if(!ack) {
+        EMS_LOGW(TAG, "write_auto_mode(): no ack from battery");
+    }
+    return ack;
+}
+#endif

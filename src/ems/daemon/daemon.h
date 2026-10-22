@@ -5,12 +5,17 @@
 // en publiceert het op de state bus. Bewaart metingen/besparingen via storage
 // en plant elke 5 minuten opnieuw.
 //
-// Bewuste verschillen met de Pi:
-// - Poll elke 30 s (+ jitter) i.p.v. 10 s - spaart de Marstek-UDP-chip.
-// - GEEN batterijaansturing: het hele "enforce/verify"-blok van de Pi vervalt,
-//   battery_active_control_enabled is altijd false in het bericht.
-// - Of de Pi op dit moment een laad-/blokvenster aanstuurt wordt alleen-lezend
-//   afgeleid uit ES.GetMode, voor dezelfde besparingsboekhouding als de Pi.
+// Batterijaansturing: het "enforce/verify"-blok van de Pi zit in
+// logic/battery_control (cyclus voor cyclus gelijk aan de Pi, zie
+// tools/control_reference.py). Twee standen, bij het bouwen gekozen:
+// - Schaduw (standaard): rekent elke cyclus uit wat hij zou sturen en logt dat
+//   ("command_shadow" in battery_log, "battery_control" in /api/state), maar
+//   stuurt niets. Poll elke 30 s (+ jitter): de Pi pollt de batterij al.
+//   battery_active_control_enabled is false in het bericht; of de Pi een
+//   laad-/blokvenster aanstuurt wordt uit ES.GetMode afgeleid voor de
+//   besparingsboekhouding.
+// - LIVE (-DEMS_BATTERY_CONTROL_LIVE=1): stuurt de batterij aan zoals de Pi,
+//   poll elke 10 s. Alleen gebruiken als de Pi-daemon uit staat.
 #pragma once
 
 #ifdef __cplusplus

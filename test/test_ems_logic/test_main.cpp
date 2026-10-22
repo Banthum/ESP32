@@ -11,9 +11,12 @@
 #include <string.h>
 
 #include "core/timeutil.h"
+#include "logic/battery_control.h"
 #include "logic/battery_scheduler.h"
 #include "logic/savings_tracker.h"
 #include "logic/scheduler_core.h"
+
+#include "control_vectors.h"
 
 static const double TEST_EPS = 1e-7; // assertAlmostEqual(places=7)
 
@@ -895,6 +898,76 @@ static void test_block_then_later_discharge_credits_ems_not_batterij(void)
 void setUp(void) {}
 void tearDown(void) {}
 
+// ------------------------------------------------------- battery_control
+// Geen Python-unittests voor dit blok op de Pi: in plaats daarvan draait
+// tools/control_reference.py de originele Pi-code op dezelfde invoer en legt
+// de uitkomst per cyclus vast in control_vectors.h. Hier moet de C++-port
+// cyclus voor cyclus precies hetzelfde doen.
+
+static ctrl_mode_reading_t vec_reading(uint8_t valid, uint8_t has_mode, uint8_t mode, uint8_t ongrid_valid, double ongrid)
+{
+    ctrl_mode_reading_t r = {};
+    r.valid = valid;
+    r.has_mode = has_mode;
+    if(has_mode) snprintf(r.mode, sizeof(r.mode), "%s", CTRL_VEC_MODES[mode]);
+    r.ongrid_power_valid = ongrid_valid;
+    r.ongrid_power = ongrid;
+    return r;
+}
+
+static bool vec_check(bool ok, const char * scenario, int tick, const char * what, char * msg, size_t msg_size)
+{
+    if(!ok) snprintf(msg, msg_size, "%s, cyclus %d: %s wijkt af van de Pi", scenario, tick, what);
+    return ok;
+}
+
+static void test_battery_control_matches_pi_reference(void)
+{
+    char msg[160];
+    int n_scenarios = sizeof(CTRL_VEC_SCENARIOS) / sizeof(CTRL_VEC_SCENARIOS[0]);
+    int checked = 0;
+    for(int si = 0; si < n_scenarios; si++) {
+        const ctrl_vec_scenario_t * sc = &CTRL_VEC_SCENARIOS[si];
+        ctrl_config_t cfg = {sc->max_power_w, sc->min_soc_pct, sc->max_soc_pct};
+        ctrl_mode_reading_t startup = vec_reading(sc->s_valid, sc->s_has_mode, sc->s_mode, sc->s_ongrid_valid, sc->s_ongrid);
+        ctrl_state_t st;
+        ctrl_init(&st, &startup);
+        if(!vec_check(st.last_sent_action == sc->x_init_action, sc->name, -1, "opstart-actie", msg, sizeof(msg)))
+            TEST_FAIL_MESSAGE(msg);
+
+        for(int i = 0; i < sc->count; i++) {
+            const ctrl_vec_tick_t * v = &CTRL_VEC_TICKS[sc->first + i];
+            ctrl_observe_soc(&st, v->soc_valid, v->soc);
+            ctrl_step_result_t r = {};
+            if(v->dec_action != DECISION_NONE) {
+                plan_decision_t d = {(decision_action_t) v->dec_action, v->dec_power_w, v->dec_remaining_s};
+                ctrl_mode_reading_t rd = vec_reading(v->r_valid, v->r_has_mode, v->r_mode, v->r_ongrid_valid, v->r_ongrid);
+                ctrl_step(&st, &cfg, v->t, &d, &rd, v->grid_valid, v->grid, &r);
+                if(r.cmd.kind != CTRL_CMD_NONE) ctrl_on_ack(&st, &r.cmd, v->ack, v->t);
+            }
+            bool ok = vec_check(r.cmd.kind == v->x_kind, sc->name, i, "commando", msg, sizeof(msg)) &&
+                      vec_check(r.cmd.kind == CTRL_CMD_NONE || r.cmd.action == v->x_action, sc->name, i, "actie", msg, sizeof(msg)) &&
+                      vec_check(r.cmd.kind != CTRL_CMD_PASSIVE || r.cmd.power_w == v->x_power_w, sc->name, i, "vermogen", msg, sizeof(msg)) &&
+                      vec_check(r.cmd.kind != CTRL_CMD_PASSIVE || r.cmd.duration_s == v->x_duration_s, sc->name, i, "cd_time", msg, sizeof(msg)) &&
+                      vec_check(r.mismatch_event == v->x_mismatch, sc->name, i, "mode_mismatch", msg, sizeof(msg)) &&
+                      vec_check(!r.mismatch_event || r.mismatch_expected_passive == v->x_mismatch_passive, sc->name, i, "mismatch-verwachting", msg, sizeof(msg)) &&
+                      vec_check(!r.mismatch_event || !r.mismatch_expected_passive || r.mismatch_is_power == v->x_mismatch_power, sc->name, i, "mismatch-soort", msg, sizeof(msg)) &&
+                      vec_check(r.verify_blind == v->x_blind, sc->name, i, "verify_blind", msg, sizeof(msg)) &&
+                      vec_check(r.getmode_failed == v->x_getmode_failed, sc->name, i, "GetMode-fout", msg, sizeof(msg)) &&
+                      vec_check(r.charge_floor_applied == v->x_charge_floor, sc->name, i, "laadvloer", msg, sizeof(msg)) &&
+                      vec_check(r.block_floor_applied == v->x_block_floor, sc->name, i, "blokvloer", msg, sizeof(msg)) &&
+                      vec_check(st.last_sent_action == v->x_last_action, sc->name, i, "last_sent_action", msg, sizeof(msg)) &&
+                      vec_check(st.last_sent_power_valid == v->x_power_valid && (!v->x_power_valid || st.last_sent_power_w == v->x_power), sc->name, i, "last_sent_power_w", msg, sizeof(msg)) &&
+                      vec_check(st.consecutive_getmode_failures == v->x_fails, sc->name, i, "GetMode-teller", msg, sizeof(msg)) &&
+                      vec_check(st.charge_started_valid == v->x_cs_valid && (!v->x_cs_valid || st.charge_started_s == v->x_cs), sc->name, i, "laadstart", msg, sizeof(msg)) &&
+                      vec_check(st.block_started_valid == v->x_bs_valid && (!v->x_bs_valid || st.block_started_s == v->x_bs), sc->name, i, "blokstart", msg, sizeof(msg));
+            if(!ok) TEST_FAIL_MESSAGE(msg);
+            checked++;
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(sizeof(CTRL_VEC_TICKS) / sizeof(CTRL_VEC_TICKS[0]), checked);
+}
+
 void setup()
 {
     delay(2000); // tijd voor de seriële monitor van `pio test`
@@ -967,6 +1040,8 @@ void setup()
     RUN_TEST(test_block_with_empty_shadow_is_a_no_op);
     RUN_TEST(test_block_zero_or_negative_kwh_is_a_no_op);
     RUN_TEST(test_block_then_later_discharge_credits_ems_not_batterij);
+    // dashboard_daemon.py enforce/verify-blok (via tools/control_reference.py)
+    RUN_TEST(test_battery_control_matches_pi_reference);
     UNITY_END();
 }
 

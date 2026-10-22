@@ -4,6 +4,7 @@
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <esp_random.h>
 #include <math.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include "../core/paths.h"
 #include "../core/state_bus.h"
 #include "../core/timeutil.h"
+#include "../logic/battery_control.h"
 #include "../logic/battery_scheduler.h"
 #include "../logic/scheduler_core.h"
 #include "../logic/savings_tracker.h"
@@ -28,8 +30,9 @@
 static const char * TAG = "dashboard.daemon";
 
 // --- constanten uit dashboard_daemon.py (zelfde waarden tenzij vermeld) ---
-// Pi: 10 s. ESP32: 30 s - zie daemon.h.
-static const uint32_t PUSH_INTERVAL_S = 30;
+// Pi: 10 s. In schaduw-modus 30 s (de Pi pollt de batterij al); zodra de ESP32
+// zelf aanstuurt 10 s, net als de Pi - de verificatie elke cyclus heeft dat nodig.
+static const uint32_t PUSH_INTERVAL_S = EMS_BATTERY_CONTROL_LIVE ? 10 : 30;
 static const double JITTER_CAP_S = 2.5;
 static const uint32_t FLUSH_INTERVAL_S = 60;
 static const double MAX_SAVINGS_GAP_S = 60;
@@ -97,6 +100,17 @@ typedef struct {
     uint32_t last_flush_s;
 
     pi_action_t pi_action;
+
+    // batterij-aansturing (battery_control.h). raw_decision = de beslissing
+    // van de laatste replan die er een had (Python: raw_decision).
+    bool has_raw_decision;
+    plan_decision_t raw_decision;
+    bool ctrl_initialized;
+    ctrl_state_t ctrl;
+    uint32_t ctrl_commands; // commando's (schaduw: die verstuurd zouden zijn)
+    bool have_last_cmd;
+    ctrl_command_t last_cmd;
+    time_t last_cmd_at;
 } daemon_state_t;
 
 static daemon_state_t * S = nullptr;
@@ -392,7 +406,158 @@ static void replan(double soc_pct)
 
     if(S->plan.current_decision.action == DECISION_NONE) {
         EMS_LOGW(TAG, "battery_scheduler: te weinig data om te plannen, skip");
+    } else {
+        S->raw_decision = S->plan.current_decision;
+        S->has_raw_decision = true;
     }
+}
+
+// ---------------------------------------------------------------- aansturing
+
+static double monotonic_s(void)
+{
+    return esp_timer_get_time() / 1e6;
+}
+
+static ctrl_mode_reading_t to_reading(const marstek_mode_t * m)
+{
+    ctrl_mode_reading_t r = {};
+    r.valid = m->valid;
+    r.has_mode = m->valid && m->mode[0] != '\0';
+    snprintf(r.mode, sizeof(r.mode), "%s", m->mode);
+    r.ongrid_power_valid = m->ongrid_power_valid;
+    r.ongrid_power = m->ongrid_power;
+    return r;
+}
+
+static bool same_command(const ctrl_command_t * a, const ctrl_command_t * b)
+{
+    return a->kind == b->kind && a->action == b->action &&
+           (a->kind != CTRL_CMD_PASSIVE || fabs(a->power_w - b->power_w) <= CTRL_POWER_DEDUP_THRESHOLD_W);
+}
+
+// Het enforce/verify-blok van de Pi, elke cyclus. In schaduw-modus (geen
+// EMS_BATTERY_CONTROL_LIVE) gaat er niets naar de batterij: het commando wordt
+// gelogd en als bevestigd behandeld, zodat de toestand verloopt alsof de ESP32
+// stuurde. Zolang de Pi nog aanstuurt, ziet GetMode wat de Pi deed - een
+// afwijkende schaduwbeslissing levert dan opnieuw-sturen op; die worden geteld
+// maar niet elke cyclus in battery_log gezet.
+static void control_tick(const marstek_mode_t * mode, const marstek_telemetry_t * tel, bool grid_valid, double grid_w)
+{
+    ctrl_mode_reading_t reading = to_reading(mode);
+    if(!S->ctrl_initialized) {
+        ctrl_init(&S->ctrl, &reading);
+        S->ctrl_initialized = true;
+        const char * last = ctrl_action_name(S->ctrl.last_sent_action);
+        EMS_LOGI(TAG, "battery_control: start, actief commando volgens de batterij: %s", last ? last : "geen");
+    }
+    ctrl_observe_soc(&S->ctrl, tel->battery_soc_pct_valid, tel->battery_soc_pct);
+    if(!S->battery.active_control_enabled || !S->has_raw_decision) {
+        return;
+    }
+
+    ctrl_config_t cfg = {S->battery.max_power_w, S->battery.min_soc_pct, S->battery.max_soc_pct};
+    double now = monotonic_s();
+    ctrl_step_result_t r;
+    ctrl_step(&S->ctrl, &cfg, now, &S->raw_decision, &reading, grid_valid, grid_w, &r);
+
+    if(r.charge_floor_applied) {
+        EMS_LOGI(TAG, "battery_scheduler: plan wil stoppen met laden, maar minimale laadduur nog niet bereikt (%.0fs resterend) - blijf laden",
+                 r.floor_remaining_s);
+    }
+    if(r.block_floor_applied) {
+        EMS_LOGI(TAG, "battery_scheduler: plan wil stoppen met blokkeren, maar minimale blokkeerduur nog niet bereikt (%.0fs resterend) - blijf blokkeren",
+                 r.floor_remaining_s);
+    }
+    if(r.getmode_failed) {
+        EMS_LOGW(TAG, "battery_scheduler: ES.GetMode mislukt (%d op rij), kan commando niet verifiëren deze cyclus",
+                 r.getmode_failures);
+    }
+    if(r.verify_blind) {
+        EMS_LOGW(TAG, "battery_scheduler: ES.GetMode al %d cycli mislukt - commando preventief opnieuw sturen",
+                 CTRL_GETMODE_FAILURE_RESEND_THRESHOLD);
+    }
+#if EMS_BATTERY_CONTROL_LIVE
+    if(r.mismatch_event) {
+        cJSON * d = cJSON_CreateObject();
+        cJSON_AddStringToObject(d, "expected", r.mismatch_expected_passive ? "Passive" : "Auto");
+        if(reading.has_mode) cJSON_AddStringToObject(d, "confirmed", reading.mode);
+        else cJSON_AddNullToObject(d, "confirmed");
+        if(r.mismatch_expected_passive) {
+            cJSON_AddNumberToObject(d, "power_w", r.cmd.power_w);
+            add_opt(d, "confirmed_ongrid_power", reading.ongrid_power_valid, reading.ongrid_power);
+        }
+        if(r.mismatch_is_power) {
+            EMS_LOGW(TAG, "battery_scheduler: Passive bevestigd (actie=%s) maar ongrid_power=%.0fW (verwacht ~%.0fW) - opnieuw sturen",
+                     ctrl_action_name(r.cmd.action), reading.ongrid_power, r.cmd.power_w);
+        } else {
+            EMS_LOGW(TAG, "battery_scheduler: commando eerder verstuurd maar batterij staat nog op %s - opnieuw sturen",
+                     reading.has_mode ? reading.mode : "?");
+        }
+        storage_log_battery_event("mode_mismatch", d);
+        cJSON_Delete(d);
+    }
+#endif
+    if(r.cmd.kind == CTRL_CMD_NONE) {
+        return;
+    }
+
+#if EMS_BATTERY_CONTROL_LIVE
+    bool ack = r.cmd.kind == CTRL_CMD_AUTO ? marstek_write_auto_mode(s_marstek_host)
+                                           : marstek_write_passive_mode(s_marstek_host, r.cmd.power_w, r.cmd.duration_s);
+    const char * event = "command_sent";
+    bool log_event = true;
+#else
+    bool ack = true;
+    const char * event = "command_shadow";
+    bool log_event = !S->have_last_cmd || !same_command(&S->last_cmd, &r.cmd);
+    if(log_event) {
+        EMS_LOGI(TAG, "battery_control SCHADUW: zou sturen: %s %.0fW cd_time %.0fs (niet verstuurd)",
+                 ctrl_action_name(r.cmd.action), r.cmd.power_w, r.cmd.duration_s);
+    }
+#endif
+    if(log_event) {
+        cJSON * d = cJSON_CreateObject();
+        cJSON_AddStringToObject(d, "action", ctrl_action_name(r.cmd.action));
+        if(r.cmd.kind == CTRL_CMD_PASSIVE) {
+            cJSON_AddNumberToObject(d, "power_w", r.cmd.power_w);
+            cJSON_AddNumberToObject(d, "duration_s", r.cmd.duration_s);
+        }
+        cJSON_AddBoolToObject(d, "ack", ack);
+        storage_log_battery_event(event, d);
+        cJSON_Delete(d);
+    }
+    ctrl_on_ack(&S->ctrl, &r.cmd, ack, now);
+    S->ctrl_commands++;
+    S->have_last_cmd = true;
+    S->last_cmd = r.cmd;
+    S->last_cmd_at = time(nullptr);
+}
+
+static cJSON * control_json(void)
+{
+    cJSON * c = cJSON_CreateObject();
+    const char * mode = !S->battery.active_control_enabled ? "off" : (EMS_BATTERY_CONTROL_LIVE ? "live" : "shadow");
+    cJSON_AddStringToObject(c, "mode", mode);
+    const char * last = ctrl_action_name(S->ctrl.last_sent_action);
+    if(last) cJSON_AddStringToObject(c, "last_sent_action", last);
+    else cJSON_AddNullToObject(c, "last_sent_action");
+    add_opt(c, "last_sent_power_w", S->ctrl.last_sent_power_valid, S->ctrl.last_sent_power_w);
+    cJSON_AddNumberToObject(c, "commands", S->ctrl_commands);
+    if(S->have_last_cmd) {
+        cJSON * lc = cJSON_AddObjectToObject(c, "last_command");
+        cJSON_AddStringToObject(lc, "action", ctrl_action_name(S->last_cmd.action));
+        if(S->last_cmd.kind == CTRL_CMD_PASSIVE) {
+            cJSON_AddNumberToObject(lc, "power_w", S->last_cmd.power_w);
+            cJSON_AddNumberToObject(lc, "duration_s", S->last_cmd.duration_s);
+        }
+        char ts[32];
+        struct tm tmv;
+        localtime_r(&S->last_cmd_at, &tmv);
+        strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tmv);
+        cJSON_AddStringToObject(lc, "at", ts);
+    }
+    return c;
 }
 
 // ---------------------------------------------------------------- Pi-sturing herkennen
@@ -459,6 +624,9 @@ static void tick(void)
         S->pool.shadow_soc_kwh = storage_load_pool_state();
         S->savings_cache = storage_savings_summary(date_today());
         S->have_last_savings_tick = false;
+        // Op de Pi herstart de daemon: plan en aansturing beginnen opnieuw.
+        S->has_raw_decision = false;
+        S->ctrl_initialized = false;
     }
     if(!S->have_day_curves || !date_equal(today, S->last_aggregated_date)) {
         daily_refresh(today);
@@ -612,14 +780,19 @@ static void tick(void)
     marstek_mode_t mode = marstek_get_mode(s_marstek_host);
     S->pi_action = detect_pi_action(&mode, &tel);
     mark("get_mode");
+    control_tick(&mode, &tel, grid_valid, grid_w);
+    mark("control");
 
     cJSON_AddItemToObject(m, "battery_plan_eigen_zon_wh", opt_array(S->plan.eigen_zon_wh, Q2));
     cJSON_AddItemToObject(m, "battery_plan_actief_gestuurd_wh", opt_array(S->plan.actief_gestuurd_wh, Q2));
     cJSON_AddItemToObject(m, "battery_plan_verwacht_verbruik_wh", opt_array(S->plan.verwacht_verbruik_wh, Q2));
     cJSON_AddItemToObject(m, "battery_plan_geblokkeerd_wh", opt_array(S->plan.geblokkeerd_wh, Q2));
     cJSON_AddItemToObject(m, "battery_soc_forecast_pct", opt_array(S->plan.soc_forecast_pct, Q2));
-    // De ESP32 stuurt nooit aan - zie daemon.h.
-    cJSON_AddBoolToObject(m, "battery_active_control_enabled", false);
+    // Alleen een LIVE-build stuurt echt aan - zie daemon.h.
+    cJSON_AddBoolToObject(m, "battery_active_control_enabled",
+                          EMS_BATTERY_CONTROL_LIVE && S->battery.active_control_enabled);
+    // ESP32-extra: wat de aansturing doet of (schaduw) zou doen.
+    cJSON_AddItemToObject(m, "battery_control", control_json());
     // ESP32-extra (niet op de Pi): wat de ESP32 alleen-lezend ziet dat de Pi doet.
     static const char * pi_names[] = {"none", "charge", "block"};
     cJSON_AddStringToObject(m, "pi_battery_action", pi_names[S->pi_action]);
@@ -679,7 +852,11 @@ static void tick(void)
                 if(surplus_w < 0) surplus_w = 0;
                 double surplus_kwh = surplus_w * elapsed_s / 3600.0 / 1000.0;
                 // Pi: battery_active_control_enabled and last_sent_action == "charge"
+#if EMS_BATTERY_CONTROL_LIVE
+                bool active_window = S->battery.active_control_enabled && S->ctrl.last_sent_action == DECISION_CHARGE;
+#else
                 bool active_window = S->pi_action == PI_ACTION_CHARGE;
+#endif
                 charge_result_t r = savings_charge(S->pool, kwh, S->battery.capacity_kwh, surplus_kwh, export_price,
                                                    import_price, active_window);
                 S->pool = r.state;
@@ -688,7 +865,11 @@ static void tick(void)
                 discharge_result_t r = savings_discharge(S->pool, kwh, import_price);
                 S->pool = r.state;
                 storage_savings_record(r.batterij_savings_eur, r.ems_savings_eur);
+#if EMS_BATTERY_CONTROL_LIVE
+            } else if(S->battery.active_control_enabled && S->ctrl.last_sent_action == DECISION_BLOCK) {
+#else
             } else if(S->pi_action == PI_ACTION_BLOCK) {
+#endif
                 if(grid_w > 0) {
                     S->pool = savings_block(S->pool, grid_w * elapsed_s / 3600.0 / 1000.0);
                 }

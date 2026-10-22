@@ -1,14 +1,17 @@
-// Port van dashboard/marstek_client.py - ALLEEN de leeskant.
+// Port van dashboard/marstek_client.py.
 //
-// De Pi stuurt de batterij aan; deze ESP32 mag dat nooit (twee sturende
-// systemen zouden elkaar tegenwerken). Daarom bestaan de twee schrijfhelpers
-// uit marstek_client.py hier bewust niet, en weigert de build
-// (tools/check_readonly.py) elke bron in src/ems/ die de schrijfkant van de
-// Marstek-API noemt.
+// De schrijfkant (Passive/Auto zetten) bestaat alleen in een build met
+// EMS_BATTERY_CONTROL_LIVE=1. Zonder die vlag - de standaard, zolang de Pi de
+// batterij nog aanstuurt - wordt hij niet eens meegecompileerd, en weigert
+// tools/check_readonly.py de build als de schrijfkant ergens anders opduikt.
 #pragma once
 
 #include <cJSON.h>
 #include <stdbool.h>
+
+#ifndef EMS_BATTERY_CONTROL_LIVE
+#define EMS_BATTERY_CONTROL_LIVE 0
+#endif
 
 #define MARSTEK_PORT 30000
 #define MARSTEK_TIMEOUT_MS 2000
@@ -38,9 +41,17 @@ typedef struct {
 // Eén Bat.GetStatus + één ES.GetStatus (zie read_telemetry()).
 marstek_telemetry_t marstek_read_telemetry(const char * host);
 
-// ES.GetMode - alleen lezen. Op de ESP32 gebruikt om te herkennen dat de Pi
-// een laadvenster aanstuurt (Passive), voor de besparingsboekhouding.
+// ES.GetMode: de modus die de batterij zelf meldt, om een commando te
+// verifiëren (zie get_mode() in marstek_client.py).
 marstek_mode_t marstek_get_mode(const char * host);
+
+#if EMS_BATTERY_CONTROL_LIVE
+// Passive op een vast vermogen (- = laden) voor duration_s seconden, of terug
+// naar Auto. true = de batterij bevestigde het commando. Nooit ontdubbeld:
+// de aanroeper (battery_control) beslist wanneer opnieuw sturen nodig is.
+bool marstek_write_passive_mode(const char * host, double power_w, double duration_s);
+bool marstek_write_auto_mode(const char * host);
+#endif
 
 // Snapshot van de per-methode tellers {"Bat.GetStatus": {"success": n, ...}}
 // (aanroeper doet cJSON_Delete), of NULL als er niets geteld is.
