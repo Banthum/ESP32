@@ -17,7 +17,7 @@
 param(
     [ValidateSet("none", "usb", "ota")] [string]$Flash = "none",
     [string]$Port = "COM3",
-    [string]$Board = "emsmachine-esp32.local",  # of het IP van het bord
+    [string]$Board = "bmsmachine.local",  # of het IP van het bord
     [switch]$Live
 )
 $ErrorActionPreference = "Stop"

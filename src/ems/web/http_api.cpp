@@ -610,6 +610,14 @@ void http_api_start(const char * write_token)
         board_lvgl_unlock();
         s_server.send(200, "text/plain", "ok");
     });
+    // Open de Instellingen-pagina (0) of een onderdeel (1-4), -1 = dashboard - voor screenshots.
+    s_server.on("/api/debug/settings", HTTP_GET, []() {
+        int i = s_server.hasArg("i") ? s_server.arg("i").toInt() : 0;
+        board_lvgl_lock();
+        dashboard_ui_open_settings(i);
+        board_lvgl_unlock();
+        s_server.send(200, "text/plain", "ok");
+    });
     // Vervangen /home/pi/consumption_quarterly.csv en battery_log.csv van de Pi.
     s_server.on("/export/consumption_quarterly.csv", HTTP_GET,
                 []() { send_csv(storage_export_consumption_csv, "consumption_quarterly.csv"); });

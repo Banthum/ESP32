@@ -1,9 +1,11 @@
-// EMSmachine op CrowPanel Advance 4.3" V1.0 - zelfstandige port van
-// github.com/Banthum/EMS. De batterij wordt nooit aangestuurd (dat doet de Pi).
+// BMSmachine op CrowPanel Advance 4.3" V1.0 - zelfstandige port van
+// github.com/Banthum/EMS (daar nog "EMSmachine"). Stuurt de batterij aan in een
+// LIVE-build, anders schaduw-modus (zie daemon/daemon.h).
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/platform.h>
+#include <stdio.h>
 #include <sys/stat.h>
 
 #include "board/board.h"
@@ -63,12 +65,20 @@ void setup()
 
     Serial.begin(115200);
     delay(200);
-    Serial.println("\nEMSmachine ESP32");
+    Serial.println("\nBMSmachine ESP32");
 
     if(!LittleFS.begin(true, EMS_FS_MOUNT)) {
         EMS_LOGE(TAG, "LittleFS mount mislukt");
     }
     mkdir(EMS_DIR, 0755);
+    // Hernoemd van EMSmachine naar BMSmachine: bestaande database meenemen.
+    struct stat st;
+    if(stat(EMS_DB_PATH, &st) != 0 && stat(EMS_DB_LEGACY_PATH, &st) == 0) {
+        bool ok = rename(EMS_DB_LEGACY_PATH, EMS_DB_PATH) == 0;
+        EMS_LOGI(TAG, "database %s -> %s: %s", EMS_DB_LEGACY_PATH, EMS_DB_PATH, ok ? "hernoemd" : "MISLUKT");
+    }
+    // Een achtergebleven journal van de oude naam hoort bij geen database meer.
+    if(stat(EMS_DB_LEGACY_PATH, &st) != 0) remove(EMS_DB_LEGACY_PATH "-journal");
     storage_init(EMS_DB_PATH);
 
     // WiFi eerst: de WiFi-driver heeft intern RAM nodig en moet dat krijgen

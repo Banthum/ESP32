@@ -146,7 +146,7 @@ typedef struct {
     bool min_home_w_valid;
     double min_home_w;
 
-    /* EMSmachine's own price/zon-gestuurde laadplanning (2026-09-30,
+    /* BMSmachine's own price/zon-gestuurde laadplanning (2026-09-30,
      * replaced screen_battery.c's synthetic test data; switched from
      * per-hour to per-kwartier 2026-10-02, see IPC_BATTERY_PLAN_LEN
      * above) - same per-element nullability as expected_consumption_curve/

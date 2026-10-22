@@ -11,4 +11,9 @@ void dashboard_ui_init(void);
  * LVGL-lock vast. */
 void dashboard_ui_select_tab(int index);
 
+/* ESP32-diagnose (/api/debug/settings): 0 = centrale Instellingen-pagina,
+ * 1-4 = Zon/Batterij/Gas/Besparing, anders terug naar het dashboard.
+ * Aanroepen met de LVGL-lock vast. */
+void dashboard_ui_open_settings(int which);
+
 #endif /* DASHBOARD_UI_H */

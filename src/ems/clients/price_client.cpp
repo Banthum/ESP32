@@ -14,7 +14,7 @@ static const char * API_URL = "https://api.energyzero.nl/v1/energyprices";
 static const char * DYNAMISCH_TARIEF_URL = "https://www.dynamisch-tarief.nl/api/stroom/kwartierprijzen";
 // Zonder eigen User-Agent serveert dynamisch-tarief.nl de HTML-landingspagina
 // i.p.v. JSON (live gevonden op de Pi, 2026-09-30) - eerlijk identificeren.
-static const char * USER_AGENT = "EMSmachine/1.0 (+https://github.com/Banthum/EMS)";
+static const char * USER_AGENT = "BMSmachine/1.0 (+https://github.com/Banthum/EMS)";
 
 static const int USAGE_TYPE_ELECTRICITY = 1;
 static const int USAGE_TYPE_GAS = 2;

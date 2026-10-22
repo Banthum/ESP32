@@ -13,6 +13,7 @@
 #include "screen_battery_settings.h"
 #include "screen_price_settings.h"
 #include "screen_savings_settings.h"
+#include "screen_settings_menu.h"
 #include "screen_energyflow.h"
 #include "fonts_signage.h"
 
@@ -30,40 +31,21 @@
  * default-active tab it already was). */
 #define TAB_NAMES "Energiestromen\nKosten\nVerbruik\nZon\nBatterij\nBesparing"
 #define TAB_INDEX_ENERGYFLOW 0 /* "Energiestromen" - must match its position in TAB_NAMES above */
-#define TAB_INDEX_PRICE 1      /* "Kosten" - must match its position in TAB_NAMES above */
-#define TAB_INDEX_SOLAR 3      /* "Zon" - must match its position in TAB_NAMES above */
-#define TAB_INDEX_BATTERY 4    /* "Batterij" - must match its position in TAB_NAMES above, real IPC-driven plan since 2026-09-30 (was "(preview)") */
 #define TAB_INDEX_SAVINGS 5    /* "Besparing" - must match its position in TAB_NAMES above, settings added 2026-10-05 (tellers-reset) */
 
 static lv_obj_t * g_waiting_label;
 static lv_obj_t * g_menu_dropdown; /* set in build_header(), read back in dashboard_ui_init() to sync default tab */
 static lv_obj_t * g_tabview; /* ESP32: voor dashboard_ui_select_tab() */
+static lv_obj_t * g_dashboard_screen; /* ESP32: voor dashboard_ui_open_settings() */
 
-/* One shared header settings icon, not one per tab (live-observed: a
- * separate copy on the Zon tab on top of this one showed two overlapping
- * gear icons) - behaviour depends on which tab is active. `tabview` comes
- * in as user_data, same pattern as menu_dropdown_event_cb() below. */
+/* One shared header settings icon, not one per tab. Opent altijd de centrale
+ * Instellingen-pagina (screen_settings_menu.c), net als het Instellingen-
+ * tabblad van de website - niet langer een eigen instellingenscherm per
+ * actief tabblad. */
 static void settings_btn_event_cb(lv_event_t * e)
 {
-    lv_obj_t * tabview = (lv_obj_t *) lv_event_get_user_data(e);
-    uint32_t active = lv_tabview_get_tab_active(tabview);
-    if(active == TAB_INDEX_PRICE) {
-        screen_price_settings_open();
-    }
-    else if(active == TAB_INDEX_SOLAR) {
-        screen_settings_open();
-    }
-    else if(active == TAB_INDEX_BATTERY) {
-        screen_battery_settings_open();
-    }
-    else if(active == TAB_INDEX_SAVINGS) {
-        screen_savings_settings_open();
-    }
-    else {
-        /* Stub: general (non-tab-specific) app settings are a later
-         * session. */
-        LV_LOG_USER("Settings icon tapped (not implemented yet for this tab)");
-    }
+    (void) e;
+    screen_settings_menu_open();
 }
 
 static void menu_dropdown_event_cb(lv_event_t * e)
@@ -121,20 +103,18 @@ static void build_header(lv_obj_t * parent, lv_obj_t * tabview)
     lv_obj_add_event_cb(menu, menu_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, tabview);
 
     lv_obj_t * title = lv_label_create(parent);
-    lv_label_set_text_static(title, "EMSmachine dashboard");
+    lv_label_set_text_static(title, "BMSmachine dashboard");
     lv_obj_set_pos(title, UI_SX(4) + UI_S(44) + UI_S(6), UI_SY(4));
     lv_obj_set_style_text_font(title, &lv_font_signage_18, 0);
 
-    /* General app settings (still a stub) - separate from the Zon tab's
-     * own gear button, which opens the solar-specific settings screen and
-     * only makes sense there (see screen_solar.c). Same size/icon font as
+    /* Centrale instellingen (screen_settings_menu.c). Same size/icon font as
      * the hamburger button above, kept in visual sync. */
     lv_obj_t * settings_btn = lv_button_create(parent);
     lv_obj_set_size(settings_btn, UI_S(44), UI_SY(40));
     lv_obj_align(settings_btn, LV_ALIGN_TOP_RIGHT, -UI_SX(6), UI_SY(2));
     lv_obj_set_style_bg_color(settings_btn, bgr_fix(lv_color_make(0, 100, 0)), 0);
     lv_obj_set_style_bg_opa(settings_btn, LV_OPA_COVER, 0);
-    lv_obj_add_event_cb(settings_btn, settings_btn_event_cb, LV_EVENT_CLICKED, tabview);
+    lv_obj_add_event_cb(settings_btn, settings_btn_event_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t * settings_icon = lv_label_create(settings_btn);
     lv_label_set_text_static(settings_icon, LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_font(settings_icon, &lv_font_montserrat_30, 0);
@@ -175,6 +155,7 @@ static void apply_state_timer_cb(lv_timer_t * timer)
 void dashboard_ui_init(void)
 {
     lv_obj_t * screen = lv_screen_active();
+    g_dashboard_screen = screen;
     /* App-wide dark background. bg_color isn't an inheritable style
      * property in LVGL, so each tab tile below also gets it explicitly -
      * only text_color/text_font are inherited down to labels that don't
@@ -265,10 +246,12 @@ void dashboard_ui_init(void)
     screen_battery_build(tab_battery);
     screen_savings_build(tab_savings);
 
-    screen_settings_init(screen);
-    screen_battery_settings_init(screen);
-    screen_price_settings_init(screen);
-    screen_savings_settings_init(screen);
+    /* De losse instellingenschermen keren terug naar de centrale pagina. */
+    lv_obj_t * settings_menu = screen_settings_menu_init(screen);
+    screen_settings_init(settings_menu);
+    screen_battery_settings_init(settings_menu);
+    screen_price_settings_init(settings_menu);
+    screen_savings_settings_init(settings_menu);
 
     /* Energiestromen is TAB_INDEX_ENERGYFLOW==0 now (2026-10-01: moved to
      * the top of TAB_NAMES, on request), so this matches lv_tabview's own
@@ -286,4 +269,16 @@ void dashboard_ui_select_tab(int index)
     if(g_tabview == NULL || index < 0 || index > TAB_INDEX_SAVINGS) return;
     lv_tabview_set_active(g_tabview, (uint32_t) index, LV_ANIM_OFF);
     lv_dropdown_set_selected(g_menu_dropdown, (uint32_t) index);
+}
+
+void dashboard_ui_open_settings(int which)
+{
+    switch(which) {
+        case 0: screen_settings_menu_open(); break;
+        case 1: screen_settings_open(); break;
+        case 2: screen_battery_settings_open(); break;
+        case 3: screen_price_settings_open(); break;
+        case 4: screen_savings_settings_open(); break;
+        default: lv_screen_load(g_dashboard_screen); break;
+    }
 }

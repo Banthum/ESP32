@@ -3,9 +3,10 @@
 
 #include <stdbool.h>
 
-// Bewust NIET "emsmachine": zo heet de Pi al op het netwerk (emsmachine.local),
-// en twee apparaten met dezelfde mDNS-naam maken elkaar onvindbaar.
-#define EMS_HOSTNAME "emsmachine-esp32"
+// Website en API op http://bmsmachine.local/. Twee apparaten met dezelfde
+// mDNS-naam maken elkaar onvindbaar - een tweede kastje in hetzelfde netwerk
+// heeft dus een eigen achtervoegsel nodig.
+#define EMS_HOSTNAME "bmsmachine"
 
 // Start WiFi met de gegeven gegevens (blokkeert niet), plus NTP/mDNS/OTA zodra
 // er verbinding is. Herverbindt zelf na uitval.

@@ -27,6 +27,11 @@
 #define DEFAULT_MAX_SOC_PCT_STR "100"
 #define DEFAULT_ENERGY_LOSS_PCT_STR "5"
 
+/* Zie clients/marstek_client.h: alleen een LIVE-build stuurt echt aan. */
+#ifndef EMS_BATTERY_CONTROL_LIVE
+#define EMS_BATTERY_CONTROL_LIVE 0
+#endif
+
 static lv_obj_t * g_settings_screen;
 static lv_obj_t * g_dashboard_screen;
 
@@ -35,10 +40,10 @@ static lv_obj_t * g_max_power_ta;
 static lv_obj_t * g_max_soc_ta;
 static lv_obj_t * g_min_soc_ta;
 static lv_obj_t * g_energy_loss_ta;
-/* ESP32: geen schakelaar - dit apparaat stuurt de batterij nooit aan (dat doet
- * de Pi). De waarde uit battery_config.json wordt wel onthouden en ongewijzigd
- * teruggeschreven, zodat een van de Pi overgenomen config intact blijft. */
-static bool g_active_control_enabled = true;
+/* Schakelaar "Batterij aansturen" (active_control_enabled) - ook de snelle
+ * noodstop: uit = de ESP32 stuurt niets meer, de batterij valt na het lopende
+ * commando (cd_time) zelf terug op Auto. */
+static lv_obj_t * g_active_control_sw;
 static lv_obj_t * g_status_label;
 static lv_obj_t * g_keyboard;
 
@@ -79,7 +84,7 @@ static void load_current_config(void)
     lv_textarea_set_text(g_min_soc_ta, DEFAULT_MIN_SOC_PCT_STR);
     lv_textarea_set_text(g_energy_loss_ta, DEFAULT_ENERGY_LOSS_PCT_STR);
     /* Matches battery_config.DEFAULT_ACTIVE_CONTROL_ENABLED=True. */
-    g_active_control_enabled = true;
+    lv_obj_add_state(g_active_control_sw, LV_STATE_CHECKED);
 
     FILE * f = fopen(BATTERY_CONFIG_PATH, "r");
     if(f == NULL) {
@@ -107,8 +112,8 @@ static void load_current_config(void)
         lv_textarea_set_text(g_max_power_ta, max_power_buf);
     }
     cJSON * active_control = cJSON_GetObjectItemCaseSensitive(root, "active_control_enabled");
-    if(cJSON_IsBool(active_control)) {
-        g_active_control_enabled = cJSON_IsTrue(active_control);
+    if(cJSON_IsBool(active_control) && !cJSON_IsTrue(active_control)) {
+        lv_obj_remove_state(g_active_control_sw, LV_STATE_CHECKED);
     }
     cJSON * max_soc = cJSON_GetObjectItemCaseSensitive(root, "max_soc_pct");
     if(cJSON_IsNumber(max_soc)) {
@@ -226,7 +231,7 @@ static void save_btn_event_cb(lv_event_t * e)
         lv_label_set_text_static(g_status_label, "Min SOC moet lager zijn dan max SOC");
         return;
     }
-    bool active_control_enabled = g_active_control_enabled; /* ongewijzigd terugschrijven, zie boven */
+    bool active_control_enabled = lv_obj_has_state(g_active_control_sw, LV_STATE_CHECKED);
 
     lv_label_set_text_static(g_status_label, "Bezig met opslaan...");
     lv_refr_now(NULL); /* show the "Bezig..." text before the blocking spawn below */
@@ -241,9 +246,7 @@ static void save_btn_event_cb(lv_event_t * e)
     lv_label_set_text_static(g_status_label, "Opgeslagen, dashboard vernieuwen...");
     lv_refr_now(NULL);
     if(restart_daemon()) {
-        /* Success: go straight back to the dashboard (the Batterij tab,
-         * since that's the only way to reach this screen), same as the
-         * Zon-settings screen does. */
+        /* Success: terug naar de Instellingen-pagina (screen_settings_menu.c). */
         lv_screen_load(g_dashboard_screen);
     }
     else {
@@ -387,12 +390,18 @@ void screen_battery_settings_init(lv_obj_t * dashboard_screen)
     lv_obj_set_style_text_font(g_energy_loss_ta, &lv_font_signage_14, 0);
     lv_obj_add_event_cb(g_energy_loss_ta, textarea_clicked_cb, LV_EVENT_CLICKED, NULL);
 
-    /* ESP32: vaste tekst i.p.v. de schakelaar - dit apparaat stuurt nooit aan. */
     lv_obj_t * active_control_label = lv_label_create(g_settings_screen);
-    lv_label_set_text_static(active_control_label, "Aansturing: uit op dit apparaat\n(de Pi stuurt de batterij aan)");
-    lv_obj_set_pos(active_control_label, RIGHT_LABEL_X, ROW3_Y);
+    lv_label_set_text_static(active_control_label,
+                             EMS_BATTERY_CONTROL_LIVE ? "Batterij aansturen" : "Aansturen (schaduw-modus)");
+    lv_obj_set_pos(active_control_label, RIGHT_LABEL_X, ROW3_Y + UI_SY(10));
     lv_obj_set_style_text_font(active_control_label, &lv_font_signage_10, 0);
-    lv_obj_set_style_text_color(active_control_label, lv_color_make(200, 200, 200), 0);
+
+    g_active_control_sw = lv_switch_create(g_settings_screen);
+    lv_obj_set_pos(g_active_control_sw, RIGHT_TA_X, ROW3_Y + UI_SY(3));
+    lv_obj_set_size(g_active_control_sw, UI_SX(50), UI_SY(24));
+    /* Zelfde groen als de knoppen (blauw=0, BGR-veilig). */
+    lv_obj_set_style_bg_color(g_active_control_sw, bgr_fix(lv_color_make(0, 140, 0)),
+                              LV_PART_INDICATOR | LV_STATE_CHECKED);
 
 #undef ROW1_Y
 #undef ROW2_Y

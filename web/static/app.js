@@ -1,4 +1,4 @@
-/* EMSmachine web dashboard - vanilla JS, no build step, no CDN
+/* BMSmachine web dashboard - vanilla JS, no build step, no CDN
  * dependencies (this has to work fully offline/LAN-only, like a router's
  * config page - see web_server.py's module docstring). Polls /api/state
  * (a passthrough of dashboard-daemon's IPC message, see

@@ -13,5 +13,6 @@
 #define EMS_P1_SOURCE_CONFIG_PATH EMS_DIR "/p1_source.json"
 #define EMS_MARSTEK_CONFIG_PATH EMS_DIR "/marstek.json"
 #define EMS_WIFI_CONFIG_PATH EMS_DIR "/wifi.json"
-#define EMS_DB_PATH EMS_DIR "/emsmachine.db"
+#define EMS_DB_PATH EMS_DIR "/bmsmachine.db"
+#define EMS_DB_LEGACY_PATH EMS_DIR "/emsmachine.db" // naam vóór BMSmachine; main.cpp hernoemt hem
 #define EMS_DEFAULT_CONSUMPTION_PROFILE_PATH EMS_DIR "/default_consumption_profile.csv"
