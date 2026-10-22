@@ -58,7 +58,7 @@ static void start_services(void)
     });
     ArduinoOTA.onError([](ota_error_t e) { EMS_LOGW(TAG, "OTA-fout %d", (int) e); });
     ArduinoOTA.begin();
-    xTaskCreatePinnedToCore(ota_task, "ota", 4096, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(ota_task, "ota", 12288, nullptr, 1, nullptr, 0); // onStart schrijft de database weg (SQLite)
 }
 
 static void on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info)

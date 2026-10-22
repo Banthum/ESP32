@@ -19,7 +19,8 @@
 // Panel_RGB met toegang tot de framebuffer (voor /api/screenshot).
 class Panel_RGB_FB : public lgfx::Panel_RGB {
  public:
-  const uint16_t* frameBuffer() const { return (const uint16_t*)_frame_buffer; }
+  // De framebuffer hoort bij de bus; _lines_buffer[0] wijst naar het begin ervan.
+  const uint16_t* frameBuffer() const { return _lines_buffer ? (const uint16_t*)_lines_buffer[0] : nullptr; }
 };
 
 class LGFX_CrowPanelV10 : public lgfx::LGFX_Device {

@@ -1,6 +1,7 @@
 #include "http_api.h"
 
 #include <LittleFS.h>
+#include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <cJSON.h>
@@ -145,7 +146,8 @@ static void handle_screenshot(void)
     for(int32_t y = h - 1; y >= 0; y--) {
         const uint16_t * src = fb + y * w;
         for(uint32_t x = 0; x < w; x++) {
-            uint16_t c = src[x];
+            // LovyanGFX bewaart RGB565 byte-gewisseld (big-endian) in de framebuffer.
+            uint16_t c = (uint16_t) ((src[x] >> 8) | (src[x] << 8));
             uint8_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
             row[x * 3 + 0] = (b << 3) | (b >> 2);
             row[x * 3 + 1] = (g << 2) | (g >> 4);
@@ -253,6 +255,57 @@ static void handle_upload_done(void)
     }
     s_server.send(200, "text/plain", "ok");
     EMS_LOGI(TAG, "upload %s ontvangen", s_upload_name.c_str());
+}
+
+// ---- firmware-update via HTTP (multipart, met token) ----
+// Alternatief voor ArduinoOTA/espota: daarbij moet het bord een TCP-verbinding
+// terug naar de pc openen, en die blokkeert de Windows-firewall op een
+// "openbaar" netwerk. Hier stuurt de pc alles naar het bord:
+//     curl -H "X-EMS-Token: <OTA_PASSWORD>" -F fw=@firmware.bin http://<bord>/api/ota
+static bool s_ota_ok = false;
+static bool s_ota_started = false;
+
+static void handle_ota_chunk(void)
+{
+    HTTPUpload & up = s_server.upload();
+    if(up.status == UPLOAD_FILE_START) {
+        s_ota_ok = false;
+        s_ota_started = false;
+        bool token_ok = s_write_token[0] != '\0' && s_server.header("X-EMS-Token") == s_write_token;
+        if(!token_ok) return;
+        EMS_LOGI(TAG, "firmware-update via HTTP gestart");
+        storage_persist(); // database staat in PSRAM - niet kwijtraken bij de herstart
+        s_ota_started = Update.begin(UPDATE_SIZE_UNKNOWN);
+        s_ota_ok = s_ota_started;
+        if(!s_ota_started) EMS_LOGW(TAG, "Update.begin mislukt: %s", Update.errorString());
+    } else if(up.status == UPLOAD_FILE_WRITE) {
+        if(s_ota_ok && Update.write(up.buf, up.currentSize) != up.currentSize) {
+            EMS_LOGW(TAG, "Update.write mislukt: %s", Update.errorString());
+            s_ota_ok = false;
+        }
+    } else if(up.status == UPLOAD_FILE_END) {
+        if(s_ota_ok) {
+            s_ota_ok = Update.end(true);
+            if(!s_ota_ok) EMS_LOGW(TAG, "Update.end mislukt: %s", Update.errorString());
+        } else if(s_ota_started) {
+            Update.abort();
+        }
+    } else if(up.status == UPLOAD_FILE_ABORTED) {
+        if(s_ota_started) Update.abort();
+        s_ota_ok = false;
+    }
+}
+
+static void handle_ota_done(void)
+{
+    if(!s_ota_ok) {
+        s_server.send(400, "text/plain", "firmware-update geweigerd of mislukt (token? zie /api/log)");
+        return;
+    }
+    s_server.send(200, "text/plain", "ok, herstart");
+    EMS_LOGI(TAG, "firmware-update geslaagd, herstart");
+    delay(500);
+    ESP.restart();
 }
 
 // POST /api/import: neemt de historie over uit een eerder geüploade import.db
@@ -414,6 +467,117 @@ static void send_csv(int (*exporter)(storage_write_fn, void *), const char * fil
     s_server.sendContent("");
 }
 
+// GET /api/log: de laatste logregels (ringbuffer), voor als er geen seriele
+// kabel aan het bord hangt. Eerst kopieren, zodat de log-mutex niet vastzit
+// terwijl er over WiFi verstuurd wordt.
+struct log_copy_t {
+    char * buf;
+    size_t len;
+};
+
+static void log_copy_cb(const char * data, size_t len, void * ctx)
+{
+    log_copy_t * c = (log_copy_t *) ctx;
+    memcpy(c->buf + c->len, data, len);
+    c->len += len;
+}
+
+static void handle_log(void)
+{
+    log_copy_t c = {(char *) heap_caps_malloc(16 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT), 0};
+    if(!c.buf) {
+        s_server.send(500, "text/plain", "geen geheugen");
+        return;
+    }
+    ems_log_copy(log_copy_cb, &c);
+    s_server.setContentLength(c.len);
+    s_server.send(200, "text/plain; charset=utf-8", "");
+    s_server.sendContent(c.buf, c.len);
+    heap_caps_free(c.buf);
+}
+
+// Diagnose beeldstabiliteit: een taak (of WiFi) tijdelijk stilzetten om te zien
+// welke belasting de RGB-DMA uit PSRAM laat achterlopen.
+// GET /api/debug/pause?task=lvgl|daemon|ui_state|ota|wifi&s=30
+struct pause_req_t {
+    char task[16];
+    uint32_t seconds;
+};
+
+static void pause_task(void * arg)
+{
+    pause_req_t * req = (pause_req_t *) arg;
+    if(strcmp(req->task, "wifi") == 0) {
+        WiFi.mode(WIFI_OFF);
+        vTaskDelay(pdMS_TO_TICKS(req->seconds * 1000));
+        WiFi.mode(WIFI_STA);
+        WiFi.begin();
+    } else {
+        TaskHandle_t h = xTaskGetHandle(req->task);
+        if(h) {
+            vTaskSuspend(h);
+            vTaskDelay(pdMS_TO_TICKS(req->seconds * 1000));
+            vTaskResume(h);
+        }
+    }
+    free(req);
+    vTaskDelete(nullptr);
+}
+
+static void handle_pause(void)
+{
+    pause_req_t * req = (pause_req_t *) calloc(1, sizeof(pause_req_t));
+    strlcpy(req->task, s_server.arg("task").c_str(), sizeof(req->task));
+    req->seconds = (uint32_t) s_server.arg("s").toInt();
+    if(req->seconds == 0 || req->seconds > 300) req->seconds = 30;
+    if(strcmp(req->task, "wifi") != 0 && xTaskGetHandle(req->task) == nullptr) {
+        free(req);
+        s_server.send(404, "text/plain", "onbekende taak");
+        return;
+    }
+    s_server.send(200, "text/plain", "ok");
+    xTaskCreatePinnedToCore(pause_task, "pause", 3072, req, 3, nullptr, 0);
+}
+
+// Diagnose: schermvullend testpatroon (grijs raster op zwart) bovenop het
+// dashboard - kleine verschuivingen van het beeld zijn daarop met een webcam
+// goed meetbaar. GET /api/debug/pattern?on=1|0
+static lv_obj_t * s_pattern = nullptr;
+
+static void handle_pattern(void)
+{
+    bool on = s_server.arg("on") == "1";
+    board_lvgl_lock();
+    if(on && !s_pattern) {
+        s_pattern = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(s_pattern);
+        lv_obj_set_size(s_pattern, BOARD_LCD_H_RES, BOARD_LCD_V_RES);
+        lv_obj_set_style_bg_color(s_pattern, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_pattern, LV_OPA_COVER, 0);
+        for(int x = 20; x < BOARD_LCD_H_RES; x += 40) {
+            lv_obj_t * l = lv_obj_create(s_pattern);
+            lv_obj_remove_style_all(l);
+            lv_obj_set_pos(l, x, 0);
+            lv_obj_set_size(l, 3, BOARD_LCD_V_RES);
+            lv_obj_set_style_bg_color(l, lv_color_hex(0x505050), 0); // grijs: webcam niet verzadigen
+            lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+        }
+        for(int y = 20; y < BOARD_LCD_V_RES; y += 40) {
+            lv_obj_t * l = lv_obj_create(s_pattern);
+            lv_obj_remove_style_all(l);
+            lv_obj_set_pos(l, 0, y);
+            lv_obj_set_size(l, BOARD_LCD_H_RES, 3);
+            lv_obj_set_style_bg_color(l, lv_color_hex(0x505050), 0); // grijs: webcam niet verzadigen
+            lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+        }
+    } else if(!on && s_pattern) {
+        lv_obj_delete(s_pattern);
+        s_pattern = nullptr;
+    }
+    board_lvgl_unlock();
+    s_server.send(200, "text/plain", "ok");
+}
+
 static void http_task(void * arg)
 {
     (void) arg;
@@ -433,6 +597,7 @@ void http_api_start(const char * write_token)
     s_server.on("/api/config", HTTP_GET, handle_config);
     s_server.on("/api/config", HTTP_PUT, handle_config);
     s_server.on("/api/upload", HTTP_POST, handle_upload_done, handle_upload_chunk);
+    s_server.on("/api/ota", HTTP_POST, handle_ota_done, handle_ota_chunk);
     s_server.on("/api/import", HTTP_POST, handle_import);
     s_server.on("/api/debug/storage", HTTP_GET, handle_debug_storage);
     s_server.on("/api/debug/plan", HTTP_POST, handle_debug_plan);
@@ -452,8 +617,11 @@ void http_api_start(const char * write_token)
     s_server.on("/api/state", HTTP_GET, handle_state);
     s_server.on("/api/files", HTTP_GET, handle_files);
     s_server.on("/api/screenshot", HTTP_GET, handle_screenshot);
+    s_server.on("/api/log", HTTP_GET, handle_log);
+    s_server.on("/api/debug/pause", HTTP_GET, handle_pause);
+    s_server.on("/api/debug/pattern", HTTP_GET, handle_pattern);
     s_server.onNotFound([]() { s_server.send(404, "text/plain", "not found"); });
     s_server.begin();
-    xTaskCreatePinnedToCore(http_task, "http", 8192, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(http_task, "http", 12288, nullptr, 1, nullptr, 0); // ruim: /api/ota en import schrijven de database weg (SQLite)
     EMS_LOGI(TAG, "HTTP-API gestart op poort 80");
 }

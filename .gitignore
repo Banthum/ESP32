@@ -16,3 +16,12 @@ src/ems/secrets.h
 
 # Gegevens van de Pi voor de historie-import (bevatten persoonlijke meetdata)
 import/
+
+# Gegenereerd door pioarduino/ESP-IDF als er in de repo zelf gebouwd wordt
+# (tools/build_xip.ps1 bouwt in een lokale kopie).
+/.dummy/
+/managed_components/
+/CMakeLists.txt
+/dependencies.lock
+/sdkconfig.defaults
+/sdkconfig.ems_xip
